@@ -1,13 +1,18 @@
 #!/bin/bash
 module purge
+#module reset
 module load craype-accel-amd-gfx942
 module load cmake/3.23.1
 module load PrgEnv-cray/8.5.0
-module load rocm/6.0.3		# for MPI on MI300A
+#module load rocm/6.1.2		# for MPI on MI300A
+module load rocm/6.2.0		# for MPI on MI300A
+
+# 081424 lower version cce test
+#module load cce/17.0.1
 
 module list
 
-export GTL_ROOT=/opt/cray/pe/mpich/8.1.29/gtl/lib
+export GTL_ROOT=/opt/cray/pe/mpich/8.1.30/gtl/lib
 
 export MPI_CFLAGS=" -I${MPICH_DIR}/include -I${ROCM_PATH}/include"
 export MPI_LDFLAGS="-Wl,-rpath=${MPICH_DIR}/lib -L${MPICH_DIR}/lib -lmpi -Wl,-rpath=${GTL_ROOT} -L${GTL_ROOT} -L${ROCM_PATH}/llvm/lib -Wl,-rpath=${ROCM_PATH}/llvm/lib -L${ROCM_PATH}/lib -lmpi ${PE_MPICH_GTL_DIR_amd_gfx942} ${PE_MPICH_GTL_LIBS_amd_gfx942} "

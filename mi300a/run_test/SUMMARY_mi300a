@@ -1,0 +1,42 @@
+[test tioga mi300a 081524, build 081525 Grid_sdm_build/mi300a_test_6.2.0/install/Grid_omp_Nc4]
+run_test/run_benchmarks, 
+
+Currently Loaded Modules:
+  1) flux_wrappers/0.1       3) craype-accel-amd-gfx942   5) cce/18.0.0      7) libfabric/2.1        9) cray-mpich/8.1.30    11) PrgEnv-cray/8.5.0
+  2) StdEnv            (S)   4) cmake/3.23.1              6) craype/2.7.32   8) craype-network-ofi  10) cray-libsci/24.07.0  12) rocm/6.2.0
+unit: mflop/s
+	dwf_fp32	ITT 
+	full comm	comparison pt
+N1n4	1.52671e+07	2.0454733716e+07
+N1n2	1.11015e+07	1.1615088825e+07
+N1n1	6.45496e+06	0.7034253585e+07
+
+==================================================================================
+
+[test tuo 091824, build 081525 Grid_sdm_build/mi300a_test_6.2.0/install/Grid_omp_unified_Nc4]
+run_test/run_benchmarks_unified_tuo 
+
+Currently Loaded Modules:
+  1) flux_wrappers/0.1       3) craype-accel-amd-gfx942   5) cce/18.0.0      7) libfabric/2.1        9) cray-mpich/8.1.30    11) PrgEnv-cray/8.5.0
+  2) StdEnv            (S)   4) cmake/3.23.1              6) craype/2.7.32   8) craype-network-ofi  10) cray-libsci/24.07.0  12) rocm/6.2.0
+unit: mflop/s
+	dwf_fp32	ITT 
+	full comm	comparison pt
+N4n16	2.18502e+07	1.6595558965e+07(becomes slower)
+N2n8	1.88456e+07	1.8511595412e+07(becomes slower)
+N1n4	1.52182e+07	2.0235142888e+07
+N1n2	1.10586e+07	1.1529115662e+07
+N1n1	6.06171e+06	0.6834755662e+07
+
+
+[100724 sungwoo]
+based on benchmark1_dwf_fp32,
+
+* Job with smaller threads is slightly (~1%) faster so thread has not much impact
+      	 N2n8_th20_acc4 vs N2n8 (th8_acc4)
+mflops	 1.88456e+07	   1.90504e+07
+* For both N4n16 and N2n8, acc8 was optimal
+
+
+==================================================================================
+

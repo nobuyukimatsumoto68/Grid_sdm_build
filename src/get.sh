@@ -16,6 +16,12 @@
 # mv ${GRID_SMEARING}/GaugeConfigurationMasked.h ${GRID_SMEARING}/GaugeConfigurationMasked.h0
 # cp -a GaugeConfigurationMasked_fix.h ${GRID_SMEARING}/GaugeConfigurationMasked.h
 
+# update on Accelerator.h for mi300a
+# to use hipMalloc instead of hipMallocManaged when --enable-unified=yes
+# but didn't see any performance improvement using this
+GRID_THREADS=Grid/Grid/threads
+mv ${GRID_THREADS}/Accelerator.h ${GRID_THREADS}/Accelerator.h0
+cp -a Accelerator.h ${GRID_THREADS}/Accelerator.h
 
 
 #=========================================================
