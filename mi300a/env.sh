@@ -3,9 +3,13 @@ module purge
 #module reset
 module load craype-accel-amd-gfx942
 module load cmake/3.23.1
-module load PrgEnv-cray/8.5.0
+#module load PrgEnv-cray/8.5.0 # 110724 this is unknown? deprecated..
+module load PrgEnv-cray/8.6.0
 #module load rocm/6.1.2		# for MPI on MI300A
 module load rocm/6.2.0		# for MPI on MI300A
+
+# 110724
+ml cce/18.0.0 cray-mpich/8.1.30
 
 # 081424 lower version cce test
 #module load cce/17.0.1
