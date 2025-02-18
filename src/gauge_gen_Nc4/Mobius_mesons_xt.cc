@@ -5,6 +5,9 @@
 // 090924 sungwoo
 // calculates mesons 2pts for G5,GiG5 and additional PJ5q
 // along both time and spatial (x) direction
+// 
+// 010424 sungwoo
+// add scalar meson
 
 #include <Grid/Grid.h>
 
@@ -147,8 +150,9 @@ void MesonTrace_hdf(Hdf5Writer &WR,LatticePropagator &q1,LatticePropagator &q2)
   // 					 "GTG5_G5",
   // 					 "G5_GTG5"});
   
-  const int nchannel=9;
+  const int nchannel=10;
   Gamma::Algebra Gammas[nchannel][2] = {
+    {Gamma::Algebra::Identity    ,Gamma::Algebra::Identity},
     {Gamma::Algebra::Gamma5      ,Gamma::Algebra::Gamma5},
     {Gamma::Algebra::GammaTGamma5,Gamma::Algebra::GammaTGamma5},
     {Gamma::Algebra::GammaXGamma5,Gamma::Algebra::GammaXGamma5},
@@ -160,7 +164,7 @@ void MesonTrace_hdf(Hdf5Writer &WR,LatticePropagator &q1,LatticePropagator &q2)
     {Gamma::Algebra::GammaZ      ,Gamma::Algebra::GammaY},
   };
 
-  std::vector<std::string> channel_name({"G5_G5",
+  std::vector<std::string> channel_name({"I_I","G5_G5",
 	"GTG5_GTG5",
 	"GXG5_GXG5",
 	"GYG5_GYG5",
@@ -387,8 +391,8 @@ int main (int argc, char ** argv)
   // You can manage seeds however you like.
   // Recommend SeedUniqueString.
   //////////////////////////////////////////////////////////////////////
-  std::vector<int> seeds4({1,2,3,4}); 
-  GridParallelRNG          RNG4(UGrid);  RNG4.SeedFixedIntegers(seeds4);
+  // std::vector<int> seeds4({1,2,3,4}); 
+  // GridParallelRNG          RNG4(UGrid);  RNG4.SeedFixedIntegers(seeds4);
 
   LatticeGaugeField Umu(UGrid);
   std::string config;
@@ -396,13 +400,16 @@ int main (int argc, char ** argv)
   RealD M5, mass;
   if( argc > 1 && argv[1][0] != '-' )
   {
-    std::cout<<GridLogMessage <<"Loading configuration from "<<argv[1]<<std::endl;
-    FieldMetaData header;
-    NerscIO::readConfiguration(Umu, header, argv[1]);
     config=argv[1];
     M5=stod(argv[2]);
     mass=stod(argv[3]);
     outfile=argv[4];
+    std::cout << GridLogMessage << "Loading configuration from " << config << std::endl;
+    std::cout << GridLogMessage << "M5=" << M5 << std::endl;
+    std::cout << GridLogMessage << "mass=" << mass << std::endl;
+    std::cout << GridLogMessage << "output: " << outfile << std::endl;
+    FieldMetaData header;
+    NerscIO::readConfiguration(Umu, header, config);
   }
   else
   {

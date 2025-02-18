@@ -146,25 +146,25 @@ int main (int argc, char ** argv)
   GridCartesian         * FGrid   = SpaceTimeGrid::makeFiveDimGrid(Ls,UGrid);
   GridRedBlackCartesian * FrbGrid = SpaceTimeGrid::makeFiveDimRedBlackGrid(Ls,UGrid);
 
-  std::vector<int> seeds4({1,2,3,4});
-  GridParallelRNG  RNG4(UGrid);  RNG4.SeedFixedIntegers(seeds4);
+  // std::vector<int> seeds4({1,2,3,4});
+  // GridParallelRNG  RNG4(UGrid);  RNG4.SeedFixedIntegers(seeds4);
 
   LatticeGaugeField Umu(UGrid);
   std::string config;
-  std::string config_path;
   std::string outfile;
-  RealD mass;
-  if( argc > 4 && argv[1][0] != '-' )
+  RealD M5, mass;
+  if( argc > 1 && argv[1][0] != '-' )
   {
-    config_path=argv[1];    
-    config=argv[2];
-    mass = stod(argv[3]);
-    std::cout << GridLogMessage << "Loading configuration from " << config_path+config << std::endl;
+    config=argv[1];
+    M5=stod(argv[2]);
+    mass=stod(argv[3]);
+    outfile=argv[4];
+    std::cout << GridLogMessage << "Loading configuration from " << config << std::endl;
     std::cout << GridLogMessage << "mass=" << mass << std::endl;
+    std::cout << GridLogMessage << "M5=" << M5 << std::endl;
+    std::cout << GridLogMessage << "output: " << outfile << std::endl;
     FieldMetaData header;
-    NerscIO::readConfiguration(Umu, header, config_path+config);
-  
-    outfile="./analysis/"+config+"_chcond.dat";
+    NerscIO::readConfiguration(Umu, header, config);
   }
   else
   {
@@ -172,11 +172,12 @@ int main (int argc, char ** argv)
     // SU<Nc>::ColdConfiguration(Umu);
     // //    SU<Nc>::HotConfiguration(RNG4,Umu);
     // config="ColdConfig";
-    std::cout << GridLogMessage << "./pbp <cfgpath> <cfgfilename> <mass> --grid xx.xx.xx.x " << config_path+config << std::endl;
+    std::cout << GridLogMessage << "./pbp <cfgpath> <cfgfilename> <mass> --grid xx.xx.xx.x " << std::endl;
     exit(1);
   }
+  // random seed from the configuration name string
+  GridParallelRNG          RNG4(UGrid);  RNG4.SeedUniqueString(config);
 
-  RealD M5=1.8;
   RealD b=1.5;// Scale factor b+c=2, b-c=1
   RealD c=0.5;
   MobiusFermionD::ImplParams bdy( std::vector<Complex>({1,1,1,-1}) );
