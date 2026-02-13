@@ -1,4 +1,5 @@
 #include <Grid/Grid.h>
+#include <filesystem>
 
 using namespace std;
 using namespace Grid;
@@ -116,19 +117,31 @@ int main (int argc, char ** argv)
   LatticeGaugeField Umu(UGrid);
   std::string config;
   std::string outfile;
+  
+  std::string infilebasedir;
+  std::string infileid;
+  std::string outfilebasename;
   RealD M5, mass;
+  int conf_min;
+  int conf_max;
+  int interval;
   if( argc > 1 && argv[1][0] != '-' )
   {
-    config=argv[1];
-    M5=stod(argv[2]);
-    mass=stod(argv[3]);
-    outfile=argv[4];
-    std::cout << GridLogMessage << "Loading configuration from " << config << std::endl;
+    infilebasedir=argv[1];
+    infileid=argv[2];
+    outfilebasename=argv[3];
+    // config=argv[1];
+    M5=stod(argv[4]);
+    mass=stod(argv[5]);
+    // outfile=argv[4];
+    conf_min=atoi(argv[6]);
+    conf_max=atoi(argv[7]);
+    interval=atoi(argv[8]);
+    
+    // std::cout << GridLogMessage << "Loading configuration from " << config << std::endl;
     std::cout << GridLogMessage << "mass=" << mass << std::endl;
     std::cout << GridLogMessage << "M5=" << M5 << std::endl;
     std::cout << GridLogMessage << "output: " << outfile << std::endl;
-    FieldMetaData header;
-    NerscIO::readConfiguration(Umu, header, config);
   }
   else
   {
@@ -136,39 +149,54 @@ int main (int argc, char ** argv)
     // SU<Nc>::ColdConfiguration(Umu);
     // //    SU<Nc>::HotConfiguration(RNG4,Umu);
     // config="ColdConfig";
-    std::cout << GridLogMessage << "./pbp <cfgpath> <cfgfilename> <mass> --grid xx.xx.xx.x " << std::endl;
+    std::cout << GridLogMessage << "./pbp <infilebasedir> <infileid> <outfilebasename> <M5> <mass> <conf_min> <conf_max> <interval> --grid xx.xx.xx.x " << std::endl;
     exit(1);
   }
-  // random seed from the configuration name string
-  GridParallelRNG          RNG4(UGrid);  RNG4.SeedUniqueString(config);
 
-  RealD b=1.5;// Scale factor b+c=2, b-c=1
-  RealD c=0.5;
-  std::vector<Complex> boundary = {1,1,1,-1};
-  typedef MobiusFermionD FermionAction;
-  FermionAction::ImplParams Params(boundary);
-  FermionAction FermAct(Umu, *FGrid, *FrbGrid, *UGrid, *UrbGrid, mass, M5, b, c, Params);
+  const std::string infilebasename=infilebasedir + "/" + infileid;
+  std::cout << "infilebasename = " << infilebasename << std::endl;
+  std::cout << "outfilebasename = " << outfilebasename << std::endl;
 
-  std::cout<<GridLogMessage <<"======================"<<std::endl;
-  std::cout<<GridLogMessage <<"MobiusFermion action as Scaled Shamir kernel"<<std::endl;
-  std::cout<<GridLogMessage <<"======================"<<std::endl;
+  for(int conf=conf_min; conf<conf_max; conf+=interval){
+    std::string pathO = outfilebasename+"chcond"+std::to_string(conf)+".xml";
 
-  // noisy estimator with Z4
-  LatticePropagator stochastic_source(UGrid);
-  StochasticSource( RNG4, stochastic_source );
-
-  LatticePropagator StochProp(UGrid);
-  Solve(FermAct, stochastic_source, StochProp);
-
-  Complex chcond = ChCondStochSrc( StochProp, stochastic_source );
+    FieldMetaData header;
+    const std::string config = infilebasename+std::to_string(conf);
+    if( !std::filesystem::exists( config ) ) continue;
+    NerscIO::readConfiguration(Umu, header, config);
   
-  {
-    // std::unique_ptr<XmlWrite> WR;
-    // if (UGrid->IsBoss()){
-    XmlWriter WR( outfile );
-    write(WR, "chcond", chcond );
-  }
+    // random seed from the configuration name string
+    GridParallelRNG          RNG4(UGrid);  RNG4.SeedUniqueString(config);
 
+    RealD b=1.5;// Scale factor b+c=2, b-c=1
+    RealD c=0.5;
+    std::vector<Complex> boundary = {1,1,1,-1};
+    typedef MobiusFermionD FermionAction;
+    FermionAction::ImplParams Params(boundary);
+    FermionAction FermAct(Umu, *FGrid, *FrbGrid, *UGrid, *UrbGrid, mass, M5, b, c, Params);
+
+    std::cout<<GridLogMessage <<"======================"<<std::endl;
+    std::cout<<GridLogMessage <<"MobiusFermion action as Scaled Shamir kernel"<<std::endl;
+    std::cout<<GridLogMessage <<"======================"<<std::endl;
+
+    // noisy estimator with Z4
+    LatticePropagator stochastic_source(UGrid);
+    StochasticSource( RNG4, stochastic_source );
+
+    LatticePropagator StochProp(UGrid);
+    Solve(FermAct, stochastic_source, StochProp);
+
+    Complex chcond = ChCondStochSrc( StochProp, stochastic_source );
+  
+    {
+      // std::unique_ptr<XmlWrite> WR;
+      // if (UGrid->IsBoss()){
+      XmlWriter WR( pathO );
+      WR.scientificFormat( true ); // @@@ double check
+      WR.setPrecision( std::numeric_limits<Real>::digits10 + 1 );
+      write(WR, "chcond", chcond );
+    }
+  }
   Grid_finalize();
 }
 
