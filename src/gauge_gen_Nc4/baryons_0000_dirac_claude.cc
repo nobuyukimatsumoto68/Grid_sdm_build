@@ -266,6 +266,8 @@ void MesonTrace_hdf(Hdf5Writer *WR,LatticePropagator &q1,LatticePropagator &q2)
 }
 
 
+// Baryon sector not needed for the meson study: disabled (kept for reference).
+#if 0
 void BaryonTrace_hdf(Hdf5Writer *WR,LatticePropagator &q)
 {
   const int nchannel=2;
@@ -356,12 +358,13 @@ void BaryonTrace_hdf(Hdf5Writer *WR,LatticePropagator &q)
 
     // // of << channel_name[ch] << " " << MF << std::endl;
     if (WR) write(*WR,channel_name[ch]+"_t",MF);
-    
+
   }
   // XmlWriter WR(file);
   // write(WR,channel_name[ch],MF);
 
 }
+#endif
 
 int main (int argc, char ** argv)
 {
@@ -504,7 +507,8 @@ int main (int argc, char ** argv)
 
     // sungwoo: phase not even being used
     MesonTrace_hdf(WR.get(),PointProps[m1],PointProps[m2]);
-    BaryonTrace_hdf(WR.get(),PointProps[m1]);
+    // baryon sector disabled for the meson study
+    // BaryonTrace_hdf(WR.get(),PointProps[m1]);
     // MesonTrace(ssp.str(),PointProps[m1],PointProps[m2]);
     // MesonTrace(ssg.str(),GaussProps[m1],GaussProps[m2],phase);
     // MesonTrace(ssz.str(),Z2Props[m1],Z2Props[m2],phase);
