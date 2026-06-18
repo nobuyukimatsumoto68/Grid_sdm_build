@@ -10,6 +10,8 @@
 // add scalar meson
 
 #include <Grid/Grid.h>
+// HDF5 C API for the output-completeness check in main (H5Fopen / H5Lexists).
+#include <hdf5.h>
 
 
 using namespace std;
@@ -37,6 +39,22 @@ static const int mom_table[n_mom][3] = {
   { 2, 0, 0}, // 14
   { 0, 2, 0}, // 15
   { 0, 0, 2}, // 16
+};
+
+// Channel names, single source of truth shared by MesonTrace_hdf (which writes
+// the datasets) and output_complete (which checks they are all present). The
+// order and entries must match the Gammas table in MesonTrace_hdf.
+static const int n_channel = 10;
+static const char *channel_names[n_channel] = {
+  "I_I","G5_G5",
+  "GTG5_GTG5",
+  "GXG5_GXG5",
+  "GYG5_GYG5",
+  "GZG5_GZG5",
+  "GT_GT",
+  "GX_GX",
+  "GY_GY",
+  "GZ_GZ",
 };
 
 // Build the phase exp(i p.x). Copied from Mobius_mesons_xt.cc:50.
@@ -146,7 +164,7 @@ void MesonTrace_hdf(Hdf5Writer *WR,LatticePropagator &q1,LatticePropagator &q2)
   // 					 "GTG5_G5",
   // 					 "G5_GTG5"});
   
-  const int nchannel=10;
+  const int nchannel=n_channel;
   Gamma::Algebra Gammas[nchannel][2] = {
     {Gamma::Algebra::Identity    ,Gamma::Algebra::Identity},
     {Gamma::Algebra::Gamma5      ,Gamma::Algebra::Gamma5},
@@ -166,16 +184,7 @@ void MesonTrace_hdf(Hdf5Writer *WR,LatticePropagator &q1,LatticePropagator &q2)
     {Gamma::Algebra::GammaZ      ,Gamma::Algebra::GammaZ},
   };
 
-  std::vector<std::string> channel_name({"I_I","G5_G5",
-	"GTG5_GTG5",
-	"GXG5_GXG5",
-	"GYG5_GYG5",
-	"GZG5_GZG5",
-	"GT_GT",
-	"GX_GX",
-	"GY_GY",
-	"GZ_GZ",
-  					 	});
+  std::vector<std::string> channel_name(channel_names, channel_names + n_channel);
   
   Gamma G5(Gamma::Algebra::Gamma5);
 
@@ -366,6 +375,63 @@ void BaryonTrace_hdf(Hdf5Writer *WR,LatticePropagator &q)
 }
 #endif
 
+
+// Completeness check for an existing output file.
+//
+// A finished run writes, for every channel, the datasets <channel>_x,
+// <channel>_t and <channel>_t_p0 .. _t_p{n_mom-1} (each stored by Grid as a
+// group holding a "data" dataset). output_complete returns true only if the
+// file exists, is a valid HDF5 file, and contains ALL of these datasets. A
+// missing or partially-written file therefore returns false and gets
+// recomputed, so an interrupted job is resumed without trusting a half-filled
+// file. Called on the boss rank only (single reader of the shared file).
+static bool output_complete(const std::string &outfile)
+{
+  std::ifstream probe(outfile.c_str());
+  if (!probe.good()){
+    return false;
+  }
+  probe.close();
+
+  if (H5Fis_hdf5(outfile.c_str()) <= 0){
+    return false;
+  }
+
+  hid_t file = H5Fopen(outfile.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+  if (file < 0){
+    return false;
+  }
+
+  bool complete = true;
+  for(int ch=0; ch<n_channel && complete; ch++){
+
+    std::vector<std::string> keys;
+    keys.push_back(std::string(channel_names[ch]) + "_x");
+    keys.push_back(std::string(channel_names[ch]) + "_t");
+    for(int ip=0; ip<n_mom; ip++){
+      std::stringstream ss;
+      ss << channel_names[ch] << "_t_p" << ip;
+      keys.push_back(ss.str());
+    }
+
+    for(size_t k=0; k<keys.size(); k++){
+      std::string grp = "/" + keys[k];
+      std::string dat = grp + "/data";
+      // Check the group and its data dataset separately so an older HDF5 that
+      // errors on a multi-part path with a missing intermediate still works.
+      if (H5Lexists(file,grp.c_str(),H5P_DEFAULT) <= 0 ||
+          H5Lexists(file,dat.c_str(),H5P_DEFAULT) <= 0){
+        complete = false;
+        break;
+      }
+    }
+  }
+
+  H5Fclose(file);
+  return complete;
+}
+
+
 int main (int argc, char ** argv)
 {
   const int Ls=16;
@@ -391,12 +457,47 @@ int main (int argc, char ** argv)
   std::string config;
   std::string outfile;
   RealD M5, mass;
+  bool cold;
+  // Parse arguments first WITHOUT touching the gauge field, so that an
+  // already-complete output can be skipped below before paying for the (costly)
+  // NERSC read of a config we are not going to use.
   if( argc > 1 && argv[1][0] != '-' )
   {
+    cold=false;
     config=argv[1];
     M5=stod(argv[2]);
     mass=stod(argv[3]);
     outfile=argv[4];
+  }
+  else
+  {
+    cold=true;
+    config="ColdConfig";
+    M5=1.5;			// give some default numbers
+    mass=0.1;			// give some default numbers
+    outfile=config+".h5";
+  }
+
+  // Skip recomputation only if a previous run already wrote a COMPLETE output
+  // file (all per-channel keys present). A missing or partially-written file is
+  // recomputed and overwritten below. The boss is the sole reader of the shared
+  // file; broadcast its verdict via GlobalSum so every rank agrees before the
+  // collective solve, then exit cleanly. This runs BEFORE the gauge read so a
+  // complete config is skipped without reading it.
+  uint64_t already_done = 0;
+  if (UGrid->IsBoss()){
+    already_done = output_complete(outfile) ? 1 : 0;
+  }
+  UGrid->GlobalSum(already_done);
+  if (already_done){
+    std::cout << GridLogMessage << "output complete, skipping: " << outfile << std::endl;
+    Grid_finalize();
+    return 0;
+  }
+
+  // Now load the gauge field for the configs we actually need to compute.
+  if( !cold )
+  {
     std::cout << GridLogMessage << "Loading configuration from " << config << std::endl;
     std::cout << GridLogMessage << "M5=" << M5 << std::endl;
     std::cout << GridLogMessage << "mass=" << mass << std::endl;
@@ -409,10 +510,6 @@ int main (int argc, char ** argv)
     std::cout<<GridLogMessage <<"Using hot configuration"<<std::endl;
     SU<Nc>::ColdConfiguration(Umu);
     //    SU<Nc>::HotConfiguration(RNG4,Umu);
-    config="ColdConfig";
-    M5=1.5;			// give some default numbers
-    mass=0.1;			// give some default numbers
-    outfile=config+".h5";
   }
 
   std::vector<RealD> masses({ mass} ); // u/d, s, c ??
