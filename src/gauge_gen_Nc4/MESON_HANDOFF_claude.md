@@ -76,7 +76,7 @@ first arg starts with `-`.
 - `read_connected_h5(file, channel)` -> `(17, NT)` complex `C(p_idx,t)`.
 - `connected_pclass(file, channel)` -> `(5, NT/2+1)` real, folded + class-averaged.
 - `read_corr_d(file)` -> `(nconf, NT/2+1)` real disc `D` for one p-class file.
-- `combine_2D_minus_C(D, C, rel_norm=1.0)` -> `2*rel_norm*D - C`.
+- `combine_CminusD(D, C, rel_norm=1.0, nf=1.0)` -> `C - nf*rel_norm*D` (Nf=1 singlet).
 - `CHANNEL_TO_TRACEDIR` maps each meson channel to its `trace_<G>/` dir.
 
 Connected-side smoke test (no production data needed):
@@ -93,6 +93,20 @@ blocks of `t  D(t)`, t=0..24).
   script; combination module with connected-side test passing.
 - PENDING: cluster production run on real configs; end-to-end `2D-C` +
   jackknife + plots; integrate into `analyze_corr_claude.ipynb`.
+
+## hadron0 cross-check (RESOLVED)
+
+The connected p=0 correlator was compared to the older `hadron/hadron0_*.npz`
+and found ~1.5x smaller at small t. Resolved: not thermalization (mesons_conn
+C(0) flat over the MC chain), not my `_claude` edits (p=0 path identical,
+`_t_p0`==`_t`), and not the committed driver (git: hadron0 predates the Feb
+driver commit; the only earlier meson driver `Mobius_mesons_xt.cc` is
+byte-identical in the meson sector to the `baryons_*` drivers). Signature
+(mass agrees ~1%, ~const amplitude factor, t-dependent excited-state contam.)
+points to a SOURCE overlap/normalization difference in the hadron0 production,
+whose builder/run-config lives on the cluster (not in this tree). Masses are
+unaffected (normalization cancels in m_eff); 2D-C uses mesons_conn consistently
+with disc D, independent of hadron0. Full detail in the impl plan.
 
 ## Open questions (see plan for detail)
 

@@ -127,13 +127,94 @@ def read_corr_d(filename):
     return np.array(blocks, dtype=float)
 
 
-def combine_2D_minus_C(D_pclass, C_pclass, rel_norm=1.0):
-    """Form 2*D - C for one p-class, one config.
+def combine_CminusD(D_pclass, C_pclass, rel_norm=1.0, nf=1.0):
+    """Form the Nf=1 physical singlet C - Nf*rel_norm*D for one p-class, one config.
 
-    rel_norm scales D relative to C (OQ1, default 1.0 -- calibrate).
-    Both inputs are real arrays of shape (NT/2+1,).
+    rel_norm scales D relative to C (= 1.0 here). The overall sign is irrelevant
+    for masses; C-D is used. Both inputs are real arrays of shape (NT/2+1,).
     """
-    return 2.0 * rel_norm * D_pclass - C_pclass
+    return C_pclass - nf * rel_norm * D_pclass
+
+
+def read_corr_d_indexed(filename):
+    """Like read_corr_d but also return the per-config indices.
+
+    The index is parsed from each '#File: ... data_files.<idx>' header.
+    Returns (indices (nconf,) int, data (nconf, NT/2+1) real).
+    """
+    idxs = []
+    blocks = []
+    cur = []
+    cur_idx = None
+    with open(filename) as fh:
+        for line in fh:
+            s = line.strip()
+            if not s:
+                continue
+            if s.startswith('#'):
+                m = re.search(r'data_files\.(\d+)', s)
+                if m:
+                    if cur:
+                        blocks.append(cur)
+                        idxs.append(cur_idx)
+                        cur = []
+                    cur_idx = int(m.group(1))
+                continue
+            cur.append(float(s.split()[1]))
+    if cur:
+        blocks.append(cur)
+        idxs.append(cur_idx)
+    return np.array(idxs, dtype=int), np.array(blocks, dtype=float)
+
+
+def collect_connected(ens_dir, channel):
+    """Read all mesons_conn.<idx>.h5 in ens_dir for one channel.
+
+    Returns (indices (nconf,) int sorted, C (nconf, 5, NT/2+1) real),
+    where C[:, m, :] is the folded class-averaged connected correlator for
+    p^2 class m.
+    """
+    import glob
+    import os
+    files = glob.glob(os.path.join(ens_dir, "mesons_conn.*.h5"))
+    pairs = []
+    for f in files:
+        m = re.search(r'mesons_conn\.(\d+)\.h5$', f)
+        if m:
+            pairs.append((int(m.group(1)), f))
+    pairs.sort()
+    idxs = []
+    arrs = []
+    n_bad = 0
+    for idx, f in pairs:
+        try:
+            a = connected_pclass(f, channel)         # (5, NT/2+1)
+        except (OSError, KeyError) as e:
+            n_bad += 1
+            print(f"WARNING: skipping unreadable/incomplete {os.path.basename(f)}: {e}")
+            continue
+        idxs.append(idx)
+        arrs.append(a)
+    if n_bad:
+        print(f"WARNING: skipped {n_bad} bad connected file(s)")
+    return np.array(idxs, dtype=int), np.array(arrs, dtype=float)
+
+
+def jackknife(samples, binsize=1):
+    """Leave-one-out jackknife over axis 0 (configs).
+
+    samples: (nconf, ...). Bins of `binsize` consecutive configs are averaged
+    first (remainder dropped). Returns (mean, err) each with shape samples[0].
+    """
+    x = np.asarray(samples, dtype=float)
+    n = x.shape[0]
+    nb = n // binsize
+    x = x[:nb * binsize].reshape((nb, binsize) + x.shape[1:]).mean(axis=1)
+    total = x.sum(axis=0)
+    jk = (total - x) / (nb - 1)            # leave-one-out means, (nb, ...)
+    mean = jk.mean(axis=0)
+    err = np.sqrt((nb - 1) / nb * np.sum((jk - mean) ** 2, axis=0))
+    return mean, err
 
 
 # ----------------------------------------------------------------------

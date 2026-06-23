@@ -112,7 +112,7 @@ Files: `meson_combine_claude.py` [DONE, connected-side smoke-tested],
        `Jackknife`; extend, do not clobber) [PENDING: notebook cells].
 `meson_combine_claude.py` provides: `read_connected_h5`, `fold_connected`,
 `connected_pclass` (fold + class-average to (5, NT/2+1)), `read_corr_d`,
-`combine_2D_minus_C(D, C, rel_norm)` and `CHANNEL_TO_TRACEDIR`. Connected-side
+`combine_CminusD(D, C, rel_norm, nf)` and `CHANNEL_TO_TRACEDIR`. Connected-side
 smoke test on the cold h5 (8^3x16) PASSED for all 10 channels (p0 class == fold
 of `_t`); disc reader validated on a real `corr_d.p0` (39 configs x 25).
 Still PENDING (needs production connected data): end-to-end 2D-C, jackknife,
@@ -145,6 +145,47 @@ Connected fold: C_fold(t)=(C(t)+C(NT-t))/2, t=1..NT/2-1; endpoints C(0), C(NT/2)
 
 ## Open questions
 
+### OQ1 clarification (2026-06-18): the factor-3 is NOT a color factor
+Rebbi's `makecorr_96_d.f90:110-115` says the disc trace data for his 96^3x192
+runs were normalized a factor of 3 LOWER than his 64^3x128 runs, while the
+connected `conn4d` used the 64^3 convention; the `pdata=3*pdata` rescales the
+trace data so D and C are coherent. Both ensembles are N_c=3 QCD, so the 3 is a
+ratio between two trace-file CODE VERSIONS, not a color trace:
+- not 1/N_c (ratio of two N_c=3 ensembles would be 1, not 3);
+- does NOT become 4 for SU(4): the relative D-vs-C weight is fixed by flavor/Wick
+  combinatorics (the "2" in 2D-C, N_f-related); the color trace tr[Gamma S] sums
+  N_c terms identically in D and C, so N_c cancels in the ratio.
+For this SU(4) N_f=1 project both D (disc_multipleGamma_binary_claude) and C
+(baryons_0000_dirac_claude) come from our own Grid codes, so there is no legacy
+mismatch to import: rel_norm = 1 is the expected value. Residual risk is only a
+projection/volume convention difference between the two Grid codes -> catch it by
+the p=0 calibration below.
+
+### hadron0 vs mesons_conn ~1.5 amplitude (RESOLVED 2026-06-18)
+Cross-check of the connected p=0 correlator against the previously measured
+`hadron/hadron0_2448_b11p045_m0p4000.npz` showed `ref ~= 1.5 x mesons_conn` at
+small t. Investigation conclusion: it is NOT the driver and NOT thermalization.
+- hadron0 is jackknife-NOT: variance test shows full per-config spread (would be
+  ~100x smaller if resampled) -> bare per-config correlators (100 configs x 48 t).
+- thermalization ruled out: mesons_conn C(0) is flat over the whole MC chain
+  (corr with config index ~ -0.07; first/last quarter agree <1%).
+- driver ruled out via git: hadron0 (Jan 17) predates commit b55ba91 (Feb 12);
+  the only meson driver then was Mobius_mesons_xt.cc. Its meson sector
+  (contraction trace(G5 adj(q1) G5 Gsnk q2 adj(Gsrc)), b=1.5/c=0.5, M5/mass args,
+  PointSource kronecker=1.0, Import/ExportPhysical) is byte-identical to
+  baryons_S2_dirac_parity.cc and baryons_0000_dirac.cc. The meson-region diff
+  between the baryons_* files is empty. So the committed driver normalization
+  never changed.
+- signature points to a SOURCE overlap/normalization difference in the hadron0
+  production: ground-state mass agrees to ~1% (source-independent), amplitude off
+  by ~const ~1.5 (different source Z), and t-dependent ratio + slightly higher ref
+  m_eff at mid-t (different excited-state contamination = different source shape).
+  The hadron0 npz-builder + production source config live on the cluster, not in
+  this tree (Untitled.ipynb only READS hadron0).
+Consequences: previously measured MASSES are unaffected (normalization cancels in
+m_eff). For 2D-C use mesons_conn (current driver) consistently with disc D; the
+hadron0 offset is a separate-production artifact, not an OQ1 input.
+
 ### OQ1 — factor-3 trace normalization (UNRESOLVED, revisit later)
 `makecorr_96_d.f90:231` does `pdata = 3*pdata`, with the in-code comment stating
 this factor is to match the $96^3$ trace normalization to the $64^3$ one. It is
@@ -154,6 +195,78 @@ $2D-C$. Decision deferred: for now treat the relative $C$-vs-$D$ constant as
 to-be-calibrated, e.g. by matching the $p=0$ connected to a trusted reference
 correlator, or by checking that $2D-C$ shows clean single-state behavior at
 large $t$. Do not hard-code a factor until this is settled.
+
+### OQ1/OQ2 normalization MATCHING derivation (2026-06-18)
+Status: rel_norm has NOT been matched. All 2D-C numbers so far used rel_norm=1.0
+(placeholder). Derivation of what rel_norm should be:
+
+Disc as written to corr_d (average_trace2 + makecorr, lines cited):
+- projection (average_trace2:143):  Stilde(p,t) = (1/NS^3) S(p,t),
+  with S(p,t) = sum_x e^{ipx} T(x,t),  T = tr[Gamma S(x,x)].
+- factor-3 (makecorr:231, ACTIVE):  pdata = 3 * Stilde.
+- correlate (makecorr:240-243):  D_file(p,t) = (ns^3/NT) sum_t' pdata(t')pdata(t'+t),
+  ns = NT/2 = 24 = NS.
+Substituting (pdata = 3 Stilde = 3 S/NS^3):
+  D_file(p,t) = (NS^3/NT) * 9 * (1/NS^6) sum_t' S(p,t') S(p,t'+t)
+              = 9 * [ (1/(NS^3 NT)) sum_t' S(p,t') S(p,t'+t) ].
+By translation invariance the bracket equals
+  D_match(p,t) = sum_x e^{ipx} <T(x,t) T(0,0)>,
+i.e. the point-source-at-origin / sum-at-sink disconnected correlator -- the SAME
+convention as the connected C from a point source. Hence
+  D_file = 9 * D_match,
+and the physical singlet 2*D_match - C is
+  2*D_match - C = 2*(D_file/9) - C   =>   rel_norm = 1/9
+PROVIDED the two Grid codes normalize the single-quark object identically (see
+caveat). The good news: Rebbi's 1/NS^3 and ns^3/NT factors are exactly what
+reconstruct D_match, so structurally D and C are the same convention; only the
+spurious factor-3 (-> 9) and the cross-code caveat remain.
+
+Caveat (cross-code per-quark normalization): D comes from
+disc_multipleGamma_binary_claude, C from baryons_0000_dirac_claude.
+
+STEP (a) DONE 2026-06-18: read both codes. The cross-code constant is EXACTLY 1.
+Both use:
+- MobiusFermionD, same mass arg, M5=1.5, b=1.5, c=0.5;
+- boundary {1,1,1,-1} (antiperiodic in time);
+- ImportPhysicalFermionSource / ExportPhysicalFermionSolution (same physical
+  single-quark normalization).
+Disc loop estimator (disc_multipleGamma_binary_claude.cc):
+StochasticDilutedSource uses Z4 noise nrm=1/sqrt(2) (E[xi xi*]=1) with FULL
+spin/color dilution and full (t,eo) dilution; res[ig] += trace(Gamma psi adj(eta))
+accumulated once per (t,eo) so every site is covered exactly once -> unbiased
+T(x)=tr[Gamma S_phys(x,x)] with NO 1/Nhit or dilution factor (constant 1).
+Connected uses an exact point source kronecker=1.0. Both C and D are second order
+in the same S_phys. => cross-code constant = 1.
+
+STEP (c) DONE 2026-06-18: validated at p0 on the LIGHT ensemble b10p865_m0p1000
+with rel_norm=1/9. G5_G5 disc contribution (2D/9)/C grows 0.8% -> ~48% across
+t=0..6 (eta'-like), m_eff(2D-C) departs upward from m_eff(C) -> disc has real
+signal and rel_norm=1/9 is the right scale. I_I (scalar) needs VACUUM
+SUBTRACTION (disc dominated by const condensate VEV ~240); separate from rel_norm.
+
+STEP (b) DONE (tooling) 2026-06-18: centralized the Fortran into
+obs_nc4nf1_2448/fortran_claude/ (average_trace2_claude.f90,
+makecorr_96_d_claude.f90 with the factor-3 line commented out,
+build_fortran_claude.sh, regenerate_corr_d_claude.sh, README_claude.md).
+Verified: factor-3-free makecorr reproduces existing corr_d / 9 to ~1e-11 (all 5
+classes). REGEN DONE + CONFIRMED 2026-06-18: user ran CONFIRM=1
+./regenerate_corr_d_claude.sh. Verified 2*D_new(p0,t0)=3.908e-3 == earlier
+2*(1/9)*D_old -> corr_d are now D_match. rel_norm = 1 everywhere
+(meson_CminusD_claude.py default); the 1/9 / factor-3 is fully retired, no magic
+factor remains.
+
+Vacuum subtraction for I_I (scalar): LEFT OUT per user (2026-06-18). I_I p0 stays
+condensate-VEV-dominated and is not a usable singlet without it; intentionally
+not implemented.
+
+CONCLUSION: rel_norm = 1/9 EXACTLY (only the spurious factor-3^2 from makecorr).
+Apply rel_norm=1/9 in the Python combine (no makecorr rerun needed). Step (b)
+(rerun makecorr without the factor-3 so corr_d files are correct at the source)
+is optional cleanup. Step (c): validate at p0 on a LIGHT ensemble where D has
+signal, confirming 2D-C single-state behavior with rel_norm=1/9.
+
+At the heavy ensemble (b11p045 m=0.4) D is noise-dominated so rel_norm barely
+affects 2D-C; it is decisive on the light ensembles where D has real signal.
 
 ### OQ2 — disc time-correlation normalization to replicate in Python
 $D$ as written by `makecorr_96_d.f90` already includes $ns^3/NT$ (`:243`) and the
