@@ -12,6 +12,12 @@
 #include <Grid/Grid.h>
 // HDF5 C API for the output-completeness check in main (H5Fopen / H5Lexists).
 #include <hdf5.h>
+#include <filesystem>  // directory_iterator for the --dir loop mode (like disc)
+#include <algorithm>   // std::sort / std::all_of for config auto-detect
+#include <cassert>     // assert in config auto-detect
+#include <ctime>       // std::time for the in-binary wall blocker
+#include <cstdlib>     // std::getenv / std::atol for the wall blocker
+#include <fstream>     // std::ifstream for the NERSC header pre-check
 
 
 using namespace std;
@@ -432,6 +438,145 @@ static bool output_complete(const std::string &outfile)
 }
 
 
+// Internal config-loop mode, mirroring disc_multipleGamma_binary_claude.cc: ONE
+// invocation processes the whole ensemble in `dir`, looping configs and skipping
+// complete outputs via output_complete (cheap -- no per-config flux run / MPI
+// relaunch, unlike the positional single-config mode). The grids and the
+// (gauge-independent) point source are built once by the caller / here; only the
+// gauge field and fermion action are rebuilt per config. An in-binary graceful
+// wall blocker (env MESON_DEADLINE_EPOCH, epoch s; 0 disables) stops on a config
+// boundary before the wall, measuring per-config time as it goes;
+// MESON_TPT_SECONDS optionally bootstraps the estimate for the first config. The
+// stop decision and measured duration are taken on the boss and broadcast
+// (GlobalSum) so every rank breaks together (the loop body is collective).
+static void run_loop_mode(GridCartesian *UGrid, GridCartesian *FGrid,
+                          GridRedBlackCartesian *FrbGrid, GridRedBlackCartesian *UrbGrid,
+                          LatticeGaugeField &Umu,
+                          const std::string &dir, const std::string &obsdir,
+                          RealD mass, RealD M5, int stride_mult)
+{
+  std::filesystem::create_directories(obsdir);
+
+  // auto-detect conf_min / interval / conf_max and the lat filename prefix
+  // (same logic as the disc binary).
+  int conf_min, conf_max, interval;
+  std::string lat_prefix;
+  {
+    std::vector<int> confs;
+    const std::string suffix = "_lat.";
+    for(const auto &entry : std::filesystem::directory_iterator(dir)){
+      const std::string fname = entry.path().filename().string();
+      const auto pos = fname.rfind(suffix);
+      if(pos == std::string::npos) continue;
+      const std::string numstr = fname.substr(pos + suffix.size());
+      if(numstr.empty() || !std::all_of(numstr.begin(), numstr.end(), ::isdigit)) continue;
+      if(lat_prefix.empty()) lat_prefix = fname.substr(0, pos + suffix.size());
+      confs.push_back(std::stoi(numstr));
+    }
+    assert(!confs.empty());
+    std::sort(confs.begin(), confs.end());
+    conf_min = confs.front();
+    interval = (confs.size() >= 2) ? confs[1] - confs[0] : 1;
+    conf_max = confs.back() + interval;
+  }
+  // --stride multiplies the native interval (1 = every config, matches disc).
+  const int step = interval * (stride_mult > 0 ? stride_mult : 1);
+  std::cout << GridLogMessage << "loop mode: dir=" << dir << " conf_min=" << conf_min
+            << " conf_max=" << conf_max << " interval=" << interval
+            << " step=" << step << std::endl;
+
+  // in-binary wall blocker inputs (see disc); MESON_DEADLINE_EPOCH 0 disables.
+  long deadline = 0;
+  if(const char* e = std::getenv("MESON_DEADLINE_EPOCH")) deadline = std::atol(e);
+  double max_dur = 0.0;       // largest per-config wall time seen so far (s)
+  if(const char* e = std::getenv("MESON_TPT_SECONDS")) max_dur = std::atof(e); // optional bootstrap
+  const double margin = 1.2;  // generous safety factor on the estimate
+
+  // fixed action params; the point source (delta at origin) is gauge-independent
+  // -> build it ONCE outside the loop. Only Umu + the action change per config.
+  const RealD b = 1.5, c = 0.5;
+  std::vector<Complex> boundary = {1,1,1,-1};
+  MobiusFermionD::ImplParams Params(boundary);
+
+  LatticePropagator point_source(UGrid);
+  Coordinate Origin({0,0,0,0});
+  PointSource(Origin, point_source);
+
+  LatticePropagator prop(UGrid);
+
+  for(int conf = conf_min; conf < conf_max; conf += step){
+
+    const std::string outfile = obsdir + "/mesons_conn." + std::to_string(conf) + ".h5";
+
+    // cheap skip of a complete output (boss decides, broadcast so ranks agree).
+    uint64_t done = 0;
+    if(UGrid->IsBoss()) done = output_complete(outfile) ? 1 : 0;
+    UGrid->GlobalSum(done);
+    if(done){
+      std::cout << GridLogMessage << "skipping conf " << conf << " (output complete)" << std::endl;
+      continue;
+    }
+
+    // graceful wall stop before a config we cannot finish (needs one measurement
+    // first unless MESON_TPT_SECONDS bootstrapped max_dur).
+    if(deadline > 0 && max_dur > 0.0){
+      uint64_t stop = 0;
+      if(UGrid->IsBoss()){
+        if((double)std::time(nullptr) + margin*max_dur > (double)deadline) stop = 1;
+      }
+      UGrid->GlobalSum(stop);
+      if(stop){
+        std::cout << GridLogMessage << "blocker: est " << (long)(margin*max_dur)
+                  << "s for next config exceeds deadline; stopping gracefully before conf "
+                  << conf << std::endl;
+        break;
+      }
+    }
+
+    const long t_start = (long)std::time(nullptr);
+
+    {
+      const std::string cfgpath = dir + "/" + lat_prefix + std::to_string(conf);
+
+      // guard against partially-written configs (e.g. HMC still running): read
+      // first line on boss, skip rather than abort if BEGIN_HEADER is missing.
+      uint64_t bad_cfg = 0;
+      if(UGrid->IsBoss()){
+        std::ifstream chk(cfgpath);
+        std::string first_line;
+        if(!chk || !std::getline(chk, first_line) || first_line != "BEGIN_HEADER") bad_cfg = 1;
+      }
+      UGrid->GlobalSum(bad_cfg);
+      if(bad_cfg){
+        std::cout << GridLogMessage << "skipping conf " << conf
+                  << " (NERSC header check failed; config may be incomplete)" << std::endl;
+        continue;
+      }
+
+      std::cout << GridLogMessage << "conf " << conf << " -> " << outfile << std::endl;
+      FieldMetaData header;
+      NerscIO::readConfiguration(Umu, header, cfgpath);
+    }
+
+    MobiusFermionD FermAct(Umu, *FGrid, *FrbGrid, *UGrid, *UrbGrid, mass, M5, b, c, Params);
+    Solve(FermAct, point_source, prop);
+
+    std::unique_ptr<Hdf5Writer> WR;
+    if(UGrid->IsBoss()) WR = std::make_unique<Hdf5Writer>(outfile);
+    MesonTrace_hdf(WR.get(), prop, prop);
+
+    // update the per-config wall-time estimate (boss clock; broadcast so max_dur
+    // is identical on every rank for the next iteration's decision).
+    uint64_t dur = 0;
+    if(UGrid->IsBoss()) dur = (uint64_t)((long)std::time(nullptr) - t_start);
+    UGrid->GlobalSum(dur);
+    if((double)dur > max_dur) max_dur = (double)dur;
+    std::cout << GridLogMessage << "conf " << conf << " took " << dur
+              << "s (max so far " << (long)max_dur << "s)" << std::endl;
+  }
+}
+
+
 int main (int argc, char ** argv)
 {
   const int Ls=16;
@@ -454,6 +599,30 @@ int main (int argc, char ** argv)
   // GridParallelRNG          RNG4(UGrid);  RNG4.SeedFixedIntegers(seeds4);
 
   LatticeGaugeField Umu(UGrid);
+
+  // ---- directory loop mode (like disc): if --dir is given, process the whole
+  // ensemble in one invocation and return. Otherwise fall through to the
+  // positional single-config / cold-config path below (preserved unchanged).
+  {
+    std::string dir, obsdir;
+    RealD lm_M5 = 1.5, lm_mass = 0.1;
+    int stride_mult = 1;
+    bool loop_mode = false;
+    for(int i=1; i<argc; i++){
+      std::string a = argv[i];
+      if      (a=="--dir"    && i+1<argc){ dir    = argv[++i]; loop_mode = true; }
+      else if (a=="--obsdir" && i+1<argc){ obsdir = argv[++i]; }
+      else if (a=="--mass"   && i+1<argc){ lm_mass= std::stod(argv[++i]); }
+      else if (a=="--M5"     && i+1<argc){ lm_M5  = std::stod(argv[++i]); }
+      else if (a=="--stride" && i+1<argc){ stride_mult = std::stoi(argv[++i]); }
+    }
+    if(loop_mode){
+      run_loop_mode(UGrid,FGrid,FrbGrid,UrbGrid,Umu,dir,obsdir,lm_mass,lm_M5,stride_mult);
+      Grid_finalize();
+      return 0;
+    }
+  }
+
   std::string config;
   std::string outfile;
   RealD M5, mass;
