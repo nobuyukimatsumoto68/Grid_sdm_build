@@ -39,6 +39,7 @@ directory
 *************************************************************************************/
 /*  END LEGAL */
 #include <Grid/Grid.h>
+#include <cstdlib>   // getenv/atof for the M1_HASEN tuning override
 
 namespace Grid{
   struct FermionParameters: Serializable {
@@ -362,6 +363,9 @@ int main(int argc, char **argv) {
   // LIGHT factor det[D(mass)/D(m1)] carries the IR; the HEAVY factor
   // det[D(m1)/D(pv)] is well conditioned. Ref: Hasenbusch, hep-lat/0107019.
   Real m1 = std::sqrt(mass*pv);
+  // tuning override: env M1_HASEN sets the intermediate mass (fallback: geometric mean
+  // sqrt(mass*pv)). Used by the run_hmc_scan_claude.sh m1 scan; the print below echoes it.
+  if (const char* e_m1 = std::getenv("M1_HASEN")) { m1 = std::atof(e_m1); }
 
   // These lines are unecessary if BC are all periodic
   std::cout << GridLogMessage << "boundary condition {1,1,1,-1}" << std::endl;
