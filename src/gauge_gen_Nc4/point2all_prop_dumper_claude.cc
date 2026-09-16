@@ -27,6 +27,9 @@
 #include <algorithm>
 #include <vector>
 #include <sstream>
+#include <ctime>
+#include <cstdlib>
+#include <filesystem>
 
 using namespace std;
 using namespace Grid;
@@ -253,6 +256,40 @@ int main(int argc, char ** argv)
             << " (non-overlap ceiling L/4 = " << latt[0]/4.0 << "), niter = " << smearNiter
             << " (stability N >~ 3 w^2 = " << 3.0*smearWidth*smearWidth << ")" << std::endl;
 
+  // ------------------------------------------------------------------
+  // Graceful wall blocker (mirrors the LMA / meson codes' MESON_DEADLINE_EPOCH /
+  // MESON_TPT_SECONDS pattern; see baryons_0000_dirac_claude.cc). This binary does
+  // ONE config per invocation, so there is no config loop to break: instead we
+  // refuse to START the solve+write when the remaining walltime cannot safely cover
+  // it, exiting cleanly BEFORE any output file is opened. Together with the atomic
+  // write below (write to <outfile>.inprogress, rename on completion) a wall kill
+  // can never leave a partial-looking <outfile>.
+  //   PROP_DEADLINE_EPOCH : job deadline (epoch s); 0 / unset disables the check.
+  //   PROP_TPT_SECONDS    : estimated per-config wall (s) for this layout.
+  // The stop decision is taken on the boss and broadcast (GlobalSum) so every rank
+  // returns together (Grid_finalize is collective).
+  {
+    long deadline = 0;
+    if(const char* e = std::getenv("PROP_DEADLINE_EPOCH")) deadline = std::atol(e);
+    double tpt = 0.0;
+    if(const char* e = std::getenv("PROP_TPT_SECONDS")) tpt = std::atof(e);
+    const double margin = 1.2; // generous safety factor on the estimate
+    if(deadline > 0 && tpt > 0.0){
+      uint64_t stop = 0;
+      if(UGrid->IsBoss()){
+        if((double)std::time(nullptr) + margin*tpt > (double)deadline) stop = 1;
+      }
+      UGrid->GlobalSum(stop);
+      if(stop){
+        std::cout << GridLogMessage << "blocker: est " << (long)(margin*tpt)
+                  << "s to finish exceeds deadline; stopping gracefully WITHOUT writing "
+                  << outfile << std::endl;
+        Grid_finalize();
+        return 0;
+      }
+    }
+  }
+
   // (a) 8 corners: spatial coords from the low 3 bits of the source index, t = 0.
   std::vector<Coordinate> srcPts(n_src, Coordinate(Nd, 0));
   for(int i=0; i<n_src; i++){
@@ -409,11 +446,21 @@ int main(int argc, char ** argv)
   GridCartesian * UGridF = SpaceTimeGrid::makeFourDimGrid(latt,
                              GridDefaultSimd(Nd, vComplexF::Nsimd()), mpi_layout);
 
+  // Atomic write: serialise to a temporary <outfile>.inprogress and rename it to the
+  // final name only after the writer is closed. A wall kill (or any crash) during the
+  // write then leaves at most a stale .inprogress, never a partial-looking <outfile>,
+  // so the submit script's skip-if-exists check stays correct and the config simply
+  // re-runs. rename() within one filesystem (lustre) is atomic.
+  const std::string tmpfile = outfile + ".inprogress";
+  // Note: WR.open() below does fopen(tmpfile,"w"), which truncates any stale temp left by a prior
+  // wall-killed write of THIS config -- no explicit remove needed. The rename after close() is what
+  // makes the final <outfile> appear only when complete.
   std::cout << GridLogMessage << "Writing " << n_src
-            << " q00 records (single precision) to " << outfile << std::endl;
+            << " q00 records (single precision) to " << tmpfile
+            << " (atomic; rename to " << outfile << " on completion)" << std::endl;
 
   ScidacWriter WR(UGridF->IsBoss());
-  WR.open(outfile);
+  WR.open(tmpfile);
   for(int i=0; i<n_src; i++){
     LatticeColourMatrixF q00F(UGridF);
     precisionChange(q00F, q00[i]);
@@ -438,6 +485,12 @@ int main(int argc, char ** argv)
               << srcPts[i][2] << "," << srcPts[i][3] << ") written." << std::endl;
   }
   WR.close();
+
+  // Publish atomically: all ranks have flushed their field data (barrier), then the
+  // boss renames the completed temp file to the final name.
+  UGridF->Barrier();
+  if(UGridF->IsBoss()) std::filesystem::rename(tmpfile, outfile);
+  UGridF->Barrier();
 
   std::cout << GridLogMessage << "Chunk 4+5 complete: q00 dumped to " << outfile << std::endl;
 
