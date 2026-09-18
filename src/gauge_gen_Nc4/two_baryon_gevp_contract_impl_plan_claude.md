@@ -122,6 +122,70 @@ Files: `two_baryon_gevp_contract_claude.cc`
   the `ops` table), `CB_Y_t` per corner, `CB_avg_t`, and a metadata record (config, mass,
   M5, smear, ops). Matches the two-baryon h5 conventions.
 
+## v1.5 — zero-momentum ($P=0$) projected sink operators (in addition to point sink)
+
+Add total-momentum-zero sink operators alongside the fixed-point ones. Two possible
+meanings of "zero momentum":
+
+**(A) COM-projected, fixed relative displacement $d$ (RECOMMENDED, tractable now).**
+$$
+O_d(t) = \sum_{\mathbf X} B(\mathbf X)\,B(\mathbf X+\mathbf d),\qquad
+C_d^{P=0}(t) = \sum_{\mathbf X} 24^4\,\det Q(\mathbf X,\mathbf X+\mathbf d),
+$$
+where $Q$ is the same $8\times8$ block matrix as the fixed-point case, now with sink baryons
+at $\mathbf X$ and $\mathbf X+\mathbf d$ (get $q_{00}(\mathbf X+\mathbf d)$ by `Cshift`). A
+**single** COM sum $\Rightarrow$ total momentum $P=0$; the relative separation $\mathbf d$ is
+fixed (a position-space relative wavefunction $\delta(\mathbf r-\mathbf d)$). Different
+$\mathbf d$ = different operators = a clean $P=0$ variational basis. **No plane-wave phases,
+no baryon-block factorisation** -- just a per-site $8\times8$ determinant summed over the
+lattice. This is the natural $P=0$ version of the current displacement operators and should
+resolve the $P=0$ tower better than the fixed-point (all-total-momenta) operators.
+
+**(B) Both baryons individually at rest, $B(\mathbf p{=}0)\,B(\mathbf p{=}0)$.** This is a
+DOUBLE sink sum $\sum_{\mathbf X_1,\mathbf X_2}$, which needs the baryon-block factorisation
+(the $8\times8$ det factorises into per-sink-point blocks) -- i.e. the same machinery as the
+general momentum projection (v2). Deferred with v2.
+
+We do **(A)**. Sink displacements $\mathbf d$ = the 3 corner classes:
+$(L/2,0,0)$ edge, $(L/2,L/2,0)$ face, $(L/2,L/2,L/2)$ body. Keep the 3 fixed-point sink ops
+too, so the sink basis grows to 6 (3 point + 3 $P{=}0$); source ops stay the 3 fixed corner
+pairs (source can't be projected -- it's where the solves were placed). $C$ becomes
+$6_{\rm snk}\times3_{\rm src}$; the GEVP downstream picks a square block (e.g. the 3 $P{=}0$
+sink vs 3 source).
+
+### Implementation (Chunk 7)
+Files: `two_baryon_gevp_contract_claude.cc`
+- Fast `detLU8` (8x8 complex LU, partial pivoting, fixed array) -- Leibniz is too slow per
+  site.
+- `TwoBaryonP0(qA, qB, dcoord)`: `Cshift` $q_{00}$ blocks by $\mathbf d$; unvectorise the 4
+  fields to host lex-order arrays (`unvectorizeToLexOrdArray` / `peekLocalSite`); loop sites,
+  assemble $8\times8$, `detLU8`, accumulate $24^4\det$ into $C[t]$ (t = site time). Global-sum
+  $C[t]$ over ranks (single-rank in dev).
+- For each source op $(a,b)$ and each sink $\mathbf d$: `C2Bp0_snkd<k>_src<jo>` dataset.
+  Keep existing `C2B_snk*_src*` (point). Record the $P{=}0$ sink displacement list in `meta`.
+- Cost: ~$V\times$(#src ops)$\times$(#d) $8\times8$ LU dets/config -- ~seconds, host-side OK.
+
+## Chunk 8 — smeared sink (DONE)
+
+Add covariant Gaussian (Wuppertal) smearing on the **sink** index of $q_{00}$, giving
+smeared-sink two-baryon and single-baryon correlators alongside the point-sink ones.
+
+- Sink smearing = smear each quark propagator at the sink: $q_{00}(x)\to\sum_y\phi(x,y)q_{00}(y)$,
+  gauge-covariant on the sink (row) colour index. `CovariantSmearing<PeriodicGimplD>::
+  GaussianSmear(U, q00, w, N, Tdir)` does exactly this (same call as the source smearing, now on
+  the stored $q_{00}$). The baryon is then $\varepsilon\,q_{00}^{\rm smeared}(x)^4$ (quark-smeared
+  sink, standard). Needs the **gauge field**, so the contraction now loads the NERSC config.
+- CLI: `--config <nersc>` (gauge field for this config; cold if omitted) and
+  `--sink-smear <w> <N>`. When both given, also emit `C2Bss_snk<i>_src<jo>`, `CBss_set<s>_*`.
+- Implementation: the Chunk-2 fixed-point loop and Chunk-3 single-baryon loop are refactored into
+  `ContractFixedPoint(q,...)` and `SingleBaryonP0(q,...)`, called once for the raw $q_{00}$ (point
+  sink) and once for the sink-smeared $q_{00}^s$ -> one validated code path.
+- Gives the source x sink smearing matrix (SS/SP/PS/PP across the source sets + sink types) = a
+  smearing variational basis for the GEVP.
+- Logistics (handoff): the contraction now needs the gauge config (lustre5). Run where both
+  $q_{00}$ and the gauge configs are visible (tuolumne/lustre5), or stage the configs; avoids the
+  ~525 GB gauge stage to dane if run on lustre5.
+
 ## Open questions
 
 1. **Operator basis size** — 3 class-representative pairs (v1 default) or a larger set

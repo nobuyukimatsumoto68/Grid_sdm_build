@@ -66,8 +66,31 @@ spare MI300A allocation. Binary `two_baryon_gevp_contract_claude`.
     `QUEUE` pbatch|pdebug, `TLIMIT`, `KEYS="m0p2000 m0p3000"` to submit a subset / resume).
 - Per-config wall: ~13 s solo, ~80 s under 4-way lustre2 I/O contention.
 - Output (lustre2): `/p/lustre2/matsumoto5/obs_gevp_2448_b<beta>_m<mass>[_point]/gevp.<idx>.h5` (~84 KB).
-- STATUS (2026-09-17): **smeared 358/386** (m0.1 92, m0.4 113 DONE; m0.2 91/93, m0.3 62/88 -- short
-  from preemption, resume-safe); **point contraction: to run** (input staged).
+- STATUS (2026-09-18): **point-sink contraction DONE** -- smeared 386/386 AND point 386/386
+  (all 4 ensembles complete, both source sets); pulled + analysed locally (dE preliminary).
+
+## Stage 3b -- smeared SINK rerun (Chunk 8, NEW code)
+
+`two_baryon_gevp_contract_claude.cc` now also does a **covariant Gaussian sink smearing** of q00
+(in addition to the point sink), emitting `C2Bss_snk<i>_src<jo>` + `CBss_set<s>_*` datasets. This
+needs the **gauge field**, so the contraction loads the NERSC config.
+- New CLI: `--config <nersc_gauge_file>` and `--sink-smear <w> <N>` (match the source: `3.0 40`).
+  Without them it behaves exactly as before (point sink only; point-sink numbers unchanged --
+  validated on cold: C2B_07_07 identical after the refactor).
+- **WHERE to run:** the gauge configs live on **lustre5**
+  (`/p/lustre5/matsumoto5/conf_nc4nf1_2448/conf_nc4nf1_2448_b<beta>_m<mass>/..._lat.<i>`), and the
+  q00 also still sit on lustre5 (they were copied, not moved). So run the smeared-sink pass where
+  BOTH are visible -- i.e. **tuolumne (reads lustre5)** or oslic-visible compute -- NOT dane
+  (dane sees only lustre1-3; staging ~525 GB of gauge to lustre2 is NOT worth it). The contraction
+  is still light (CPU-bound work; on a GPU node it just uses one device briefly).
+- Run script to write (mirror `run_gevp_contract_dane_claude.sh`): per config, map the gevp index
+  to its NERSC gauge file and pass `--config <that> --sink-smear 3.0 40`, `--src` the q00
+  set(s), `--out` a NEW obs dir e.g. `obs_gevp_2448_b<beta>_m<mass>_ss/gevp.<idx>.h5` (keep the
+  smeared-sink outputs separate from the point-sink ones). Skip-if-exists; no rm/overwrite.
+- Output HDF5 then has 37 datasets (19 point-sink + 9 `C2Bss_*` + 9 `CBss_*`); `meta` carries
+  `sinkSmearWidth`/`sinkSmearNiter`. Pull with the existing `rsync_pull_gevp_claude.sh` (its
+  filter already matches `obs_gevp_2448_*`).
+- STATUS: code DONE + validated locally; **rerun to run** (choose smeared and/or point source set).
 
 ### Output format -- gevp.<idx>.h5, 19 datasets (Grid Hdf5Writer)
 - `meta`

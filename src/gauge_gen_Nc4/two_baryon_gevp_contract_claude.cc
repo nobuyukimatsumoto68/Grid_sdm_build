@@ -167,7 +167,9 @@ public:
     std::vector<int>,    srcSetNiter,   // per set
     std::vector<int>,    snkOpFlat,     // 2*nSnkOp: sink pairs (c,d)
     std::vector<int>,    srcSet,        // nSrcOp: which set
-    std::vector<int>,    srcOpFlat);    // 2*nSrcOp: source pairs (a,b)
+    std::vector<int>,    srcOpFlat,     // 2*nSrcOp: source pairs (a,b)
+    double,              sinkSmearWidth,// covariant Gaussian sink smearing (0 = point)
+    int,                 sinkSmearNiter);
 };
 
 // Read one q00 source set (.lime with n_src single-precision LatticeColourMatrixF
@@ -202,6 +204,69 @@ static void readQ00Set(const std::string &infile,
   for(int i=0; i<n_src; i++) assert( got[i] && "missing a corner record" );
 }
 
+// Fixed-point two-baryon contraction C2B[i][jo][t] = 24^4 det(8x8). Reads the two sink
+// baryons at the fixed corner points of snkOps[i] and the source corners of srcOpList[jo]
+// from q[set][corner]. q = raw q00 (point sink) or sink-smeared q00s (smeared sink).
+// Block map matches two_baryon_corr_prod_claude.cc:
+//   OO=(sink c, src a), OM=(sink c, src b), MO=(sink d, src a), MM=(sink d, src b).
+static std::vector<std::vector<std::vector<ComplexD>>>
+ContractFixedPoint(const std::vector<std::vector<LatticeColourMatrix>> &q,
+                   const std::vector<std::array<int,2>> &snkOps,
+                   const std::vector<std::pair<int,std::array<int,2>>> &srcOpList,
+                   const Coordinate &latt, int T)
+{
+  int nSnkOp = snkOps.size();
+  int nSrcOp = srcOpList.size();
+  std::vector<std::vector<std::vector<ComplexD>>> C2B(nSnkOp,
+      std::vector<std::vector<ComplexD>>(nSrcOp, std::vector<ComplexD>(T, ComplexD(0.0,0.0))));
+  for(int t=0; t<T; t++){
+    for(int i=0; i<nSnkOp; i++){
+      int cc = snkOps[i][0];
+      int dd = snkOps[i][1];
+      Coordinate Xc(Nd,0), Xd(Nd,0);
+      for(int mu=0; mu<3; mu++){
+        Xc[mu] = ((cc>>mu)&1) * (latt[mu]/2);
+        Xd[mu] = ((dd>>mu)&1) * (latt[mu]/2);
+      }
+      Xc[Tdir] = t;
+      Xd[Tdir] = t;
+      for(int jo=0; jo<nSrcOp; jo++){
+        int s = srcOpList[jo].first;
+        int a = srcOpList[jo].second[0];
+        int b = srcOpList[jo].second[1];
+        CMat OO = colourBlockAt(q[s][a], Xc);
+        CMat OM = colourBlockAt(q[s][b], Xc);
+        CMat MO = colourBlockAt(q[s][a], Xd);
+        CMat MM = colourBlockAt(q[s][b], Xd);
+        C2B[i][jo][t] = TwoBaryonCorr(OO, OM, MO, MM);
+      }
+    }
+  }
+  return C2B;
+}
+
+// Single-baryon p=0 correlators from q[set][corner]: CB[s][Y][t] and corner-avg CBavg[s][t].
+static void SingleBaryonP0(const std::vector<std::vector<LatticeColourMatrix>> &q,
+                           int nSet, int T,
+                           std::vector<std::vector<std::vector<Complex>>> &CB,
+                           std::vector<std::vector<Complex>> &CBavg)
+{
+  CB.assign(nSet, std::vector<std::vector<Complex>>(n_src, std::vector<Complex>(T, Complex(0.0,0.0))));
+  CBavg.assign(nSet, std::vector<Complex>(T, Complex(0.0,0.0)));
+  for(int s=0; s<nSet; s++){
+    for(int Y=0; Y<n_src; Y++){
+      LatticeComplex dens = BaryonSingleDensity(q[s][Y]);
+      std::vector<TComplex> sl;
+      sliceSum(dens, sl, Tdir);
+      for(int t=0; t<T; t++){
+        Complex v = TensorRemove(sl[t]);
+        CB[s][Y][t]  = v;
+        CBavg[s][t] += v / RealD(n_src);
+      }
+    }
+  }
+}
+
 int main(int argc, char ** argv)
 {
   Grid_init(&argc, &argv);
@@ -214,9 +279,19 @@ int main(int argc, char ** argv)
   // ------------------------------------------------------------------
   std::vector<std::string> srcFiles;
   std::string outfile = "ColdConfig.gevp.h5";
+  std::string configFile;                 // NERSC gauge field (for smeared sink); cold if empty
+  RealD sinkSmearWidth = 0.0;
+  int   sinkSmearNiter = 0;
+  bool  doSinkSmear    = false;
   for(int i=0; i<argc; i++){
-    if( std::string(argv[i]) == "--src" ) srcFiles.push_back(argv[i+1]);
-    if( std::string(argv[i]) == "--out" ) outfile = argv[i+1];
+    if( std::string(argv[i]) == "--src" )    srcFiles.push_back(argv[i+1]);
+    if( std::string(argv[i]) == "--out" )    outfile = argv[i+1];
+    if( std::string(argv[i]) == "--config" ) configFile = argv[i+1];
+    if( std::string(argv[i]) == "--sink-smear" ){
+      sinkSmearWidth = std::stod(argv[i+1]);
+      sinkSmearNiter = std::stoi(argv[i+2]);
+      doSinkSmear    = ( sinkSmearWidth > 0.0 && sinkSmearNiter > 0 );
+    }
   }
   if( srcFiles.empty() ) srcFiles.push_back("ColdConfig.prop.lime");
 
@@ -284,33 +359,9 @@ int main(int argc, char ** argv)
   std::cout << GridLogMessage << "C_ij: " << nSnkOp << " sink ops x "
             << nSrcOp << " source ops (" << nSet << " set(s)) x T=" << T << std::endl;
 
-  // C2B[i][jo][t]
-  std::vector<std::vector<std::vector<ComplexD>>> C2B(nSnkOp,
-      std::vector<std::vector<ComplexD>>(nSrcOp, std::vector<ComplexD>(T, ComplexD(0.0,0.0))));
-
-  for(int t=0; t<T; t++){
-    for(int i=0; i<nSnkOp; i++){
-      int cc = snkOps[i][0];
-      int dd = snkOps[i][1];
-      Coordinate Xc(Nd,0), Xd(Nd,0);
-      for(int mu=0; mu<3; mu++){
-        Xc[mu] = ((cc>>mu)&1) * (latt[mu]/2);
-        Xd[mu] = ((dd>>mu)&1) * (latt[mu]/2);
-      }
-      Xc[Tdir] = t;
-      Xd[Tdir] = t;
-      for(int jo=0; jo<nSrcOp; jo++){
-        int s = srcOpList[jo].first;
-        int a = srcOpList[jo].second[0];
-        int b = srcOpList[jo].second[1];
-        CMat OO = colourBlockAt(q00[s][a], Xc);
-        CMat OM = colourBlockAt(q00[s][b], Xc);
-        CMat MO = colourBlockAt(q00[s][a], Xd);
-        CMat MM = colourBlockAt(q00[s][b], Xd);
-        C2B[i][jo][t] = TwoBaryonCorr(OO, OM, MO, MM);
-      }
-    }
-  }
+  // Point-sink two-baryon matrix (raw q00).
+  std::vector<std::vector<std::vector<ComplexD>>> C2B =
+      ContractFixedPoint(q00, snkOps, srcOpList, latt, T);
 
   // Validation anchor: sink {0,7} x source set0 {0,7} must equal the old cold-config
   // two_baryon_0000_t (both point source, cold). snkOps[2]={0,7}, srcOpList index for
@@ -327,28 +378,53 @@ int main(int argc, char ** argv)
   //   C_B^Y(t) = sliceSum_Tdir BaryonSingleDensity(q00[set][Y]) (zero momentum).
   //   M_B comes from these; the two-baryon interaction energy is dE = E_2B - 2 M_B.
   // ------------------------------------------------------------------
-  std::vector<std::vector<std::vector<Complex>>> CB(nSet,
-      std::vector<std::vector<Complex>>(n_src, std::vector<Complex>(T, Complex(0.0,0.0))));
-  std::vector<std::vector<Complex>> CBavg(nSet, std::vector<Complex>(T, Complex(0.0,0.0)));
-
-  for(int s=0; s<nSet; s++){
-    for(int Y=0; Y<n_src; Y++){
-      LatticeComplex dens = BaryonSingleDensity(q00[s][Y]);
-      std::vector<TComplex> sl;
-      sliceSum(dens, sl, Tdir);
-      for(int t=0; t<T; t++){
-        Complex v = TensorRemove(sl[t]);
-        CB[s][Y][t]  = v;
-        CBavg[s][t] += v / RealD(n_src);
-      }
-    }
+  std::vector<std::vector<std::vector<Complex>>> CB;
+  std::vector<std::vector<Complex>> CBavg;
+  SingleBaryonP0(q00, nSet, T, CB, CBavg);
+  for(int s=0; s<nSet; s++)
     std::cout << GridLogMessage << "single-baryon C_B set " << s
               << " (corner-avg): t0 " << CBavg[s][0]
               << " t1 " << CBavg[s][1] << std::endl;
+
+  // ------------------------------------------------------------------
+  // Chunk 8 (optional): smeared sink. Covariantly Gaussian-smear q00's sink index
+  // (needs the gauge field -> load NERSC config, cold if none), then contract with the
+  // sink-smeared q00s. Emits C2Bss_*, CBss_* alongside the point-sink datasets.
+  // ------------------------------------------------------------------
+  std::vector<std::vector<std::vector<ComplexD>>> C2Bss;
+  std::vector<std::vector<std::vector<Complex>>>  CBss;
+  std::vector<std::vector<Complex>>               CBssavg;
+  if( doSinkSmear ){
+    std::cout << GridLogMessage << "=== smeared sink: w=" << sinkSmearWidth
+              << " N=" << sinkSmearNiter << " ===" << std::endl;
+    LatticeGaugeField Umu(UGrid);
+    if( !configFile.empty() ){
+      std::cout << GridLogMessage << "loading gauge config " << configFile << std::endl;
+      FieldMetaData header;
+      NerscIO::readConfiguration(Umu, header, configFile);
+    } else {
+      std::cout << GridLogMessage << "no --config: using cold gauge for smearing" << std::endl;
+      SU<Nc>::ColdConfiguration(Umu);
+    }
+    std::vector<LatticeColourMatrix> U(Nd, UGrid);
+    for(int mu=0; mu<Nd; mu++) U[mu] = PeekIndex<LorentzIndex>(Umu, mu);
+
+    // Sink-smear each stored q00 (covariant Gaussian on the sink colour+position index).
+    std::vector<std::vector<LatticeColourMatrix>> q00s(nSet,
+        std::vector<LatticeColourMatrix>(n_src, LatticeColourMatrix(UGrid)));
+    for(int s=0; s<nSet; s++)
+      for(int Y=0; Y<n_src; Y++){
+        q00s[s][Y] = q00[s][Y];
+        CovariantSmearing<PeriodicGimplD>::GaussianSmear(U, q00s[s][Y], sinkSmearWidth, sinkSmearNiter, Tdir);
+      }
+
+    C2Bss = ContractFixedPoint(q00s, snkOps, srcOpList, latt, T);
+    SingleBaryonP0(q00s, nSet, T, CBss, CBssavg);
+    std::cout << GridLogMessage << "Chunk 8 complete: smeared-sink correlators built." << std::endl;
   }
 
   // ------------------------------------------------------------------
-  // HDF5 output: C2B_snk<i>_src<jo>, CB_set<s>_corner<Y>, CB_set<s>_avg, and metadata.
+  // HDF5 output: point sink (C2B_*, CB_*) + optional smeared sink (C2Bss_*, CBss_*).
   // ------------------------------------------------------------------
   std::unique_ptr<Hdf5Writer> WR;
   if(UGrid->IsBoss()) WR = std::make_unique<Hdf5Writer>(outfile);
@@ -378,6 +454,8 @@ int main(int argc, char ** argv)
       meta.srcOpFlat.push_back(srcOpList[jo].second[0]);
       meta.srcOpFlat.push_back(srcOpList[jo].second[1]);
     }
+    meta.sinkSmearWidth = doSinkSmear ? sinkSmearWidth : 0.0;
+    meta.sinkSmearNiter = doSinkSmear ? sinkSmearNiter : 0;
     write(*WR, std::string("meta"), meta);
 
     for(int i=0; i<nSnkOp; i++){
@@ -402,6 +480,33 @@ int main(int argc, char ** argv)
       std::ostringstream nm;
       nm << "CB_set" << s << "_avg";
       write(*WR, nm.str(), CFa);
+    }
+
+    // Smeared-sink datasets (only when --sink-smear was requested).
+    if( doSinkSmear ){
+      for(int i=0; i<nSnkOp; i++){
+        for(int jo=0; jo<nSrcOp; jo++){
+          CorrFile CF;
+          CF.data = C2Bss[i][jo];
+          std::ostringstream nm;
+          nm << "C2Bss_snk" << i << "_src" << jo;
+          write(*WR, nm.str(), CF);
+        }
+      }
+      for(int s=0; s<nSet; s++){
+        for(int Y=0; Y<n_src; Y++){
+          CorrFile CF;
+          CF.data = CBss[s][Y];
+          std::ostringstream nm;
+          nm << "CBss_set" << s << "_corner" << Y;
+          write(*WR, nm.str(), CF);
+        }
+        CorrFile CFa;
+        CFa.data = CBssavg[s];
+        std::ostringstream nm;
+        nm << "CBss_set" << s << "_avg";
+        write(*WR, nm.str(), CFa);
+      }
     }
   }
   std::cout << GridLogMessage << "Chunk 3 complete: single-baryon + HDF5 written to "
