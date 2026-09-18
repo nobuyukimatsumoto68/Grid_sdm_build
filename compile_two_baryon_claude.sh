@@ -77,8 +77,13 @@ echo "Source     : ${SRC}"
 echo "Output     : ${BIN_DIR}/${BIN_NAME}"
 echo "Compiling ..."
 
-# Mirror the Makefile rule:  $(CXX) $(CXXFLAGS) $(LDFLAGS) $(LIBS) $< -o $@
+# Mirror Grid's native Makefile link rule (CXXLINK): the object comes BEFORE the
+# libraries -- $(CXX) $(CXXFLAGS) $(LDFLAGS) $< $(LIBS) -o $@. With a static
+# libGrid.a the linker is single-pass left-to-right, so -lGrid / -lhdf5 must follow
+# the source object or every Grid symbol comes up "undefined reference" (this is
+# why the old LIBS-before-SRC order failed to link on dane's clang-14/GNU-ld even
+# though it happened to work under tuolumne's more lenient hipcc/lld).
 # CXX / *FLAGS are intentionally unquoted so they expand into multiple args.
-${CXX} ${CXXFLAGS} ${LDFLAGS} ${LIBS} "${SRC}" -o "${BIN_DIR}/${BIN_NAME}"
+${CXX} ${CXXFLAGS} ${LDFLAGS} "${SRC}" ${LIBS} -o "${BIN_DIR}/${BIN_NAME}"
 
 echo "Done: ${BIN_DIR}/${BIN_NAME}"
