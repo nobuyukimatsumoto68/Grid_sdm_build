@@ -1,3 +1,5 @@
 freeze
+*.out
+*_claude
 *~
 */*~
