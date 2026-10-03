@@ -1,5 +1,9 @@
 freeze
 *.out
+*.log
+*.h5
+*.png
+*.lime
 *_claude
 *~
 */*~
