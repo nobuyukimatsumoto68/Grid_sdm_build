@@ -47,6 +47,24 @@ fi
 
 # Pull the same four variables the Makefile uses.
 CXX="$(${CONFIG} --cxx)"
+# The local Grid build was configured with /usr/local/cuda-12.6, which was removed
+# (2026-09-29). If the configured compiler binary is gone, swap in the nvcc from
+# NVCC_DIR (default /usr/local/cuda/bin, currently 12.9; same CUDA major as the
+# libGrid.a build), keeping the remaining arguments (-std=c++17 -x cu).
+CXX_BIN="${CXX%% *}"
+if [ ! -x "${CXX_BIN}" ]; then
+    NVCC_DIR="${NVCC_DIR:-/usr/local/cuda/bin}"
+    echo "WARNING: configured compiler ${CXX_BIN} not found; using ${NVCC_DIR}/nvcc" >&2
+    CXX="${NVCC_DIR}/nvcc ${CXX#* }"
+fi
+# nvcc 12.x accepts host gcc <= 14, but the system g++ is now 15 (OS upgrade). The
+# -ccbin is Open MPI's mpic++, which calls ${OMPI_CXX:-g++}; point it at g++-12 unless
+# the caller set OMPI_CXX.
+GXX_MAJOR="$(g++ -dumpversion | cut -d. -f1)"
+if [ -z "${OMPI_CXX:-}" ] && [ "${GXX_MAJOR}" -gt 14 ] && command -v g++-12 >/dev/null 2>&1; then
+    echo "WARNING: system g++ is version ${GXX_MAJOR} (> 14, unsupported by nvcc 12); using OMPI_CXX=g++-12" >&2
+    export OMPI_CXX=g++-12
+fi
 CXXFLAGS="$(${CONFIG} --cxxflags)"
 LDFLAGS="$(${CONFIG} --ldflags)"
 LIBS="$(${CONFIG} --libs)"
