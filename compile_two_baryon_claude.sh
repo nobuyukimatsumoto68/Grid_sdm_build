@@ -52,18 +52,29 @@ CXX="$(${CONFIG} --cxx)"
 # NVCC_DIR (default /usr/local/cuda/bin, currently 12.9; same CUDA major as the
 # libGrid.a build), keeping the remaining arguments (-std=c++17 -x cu).
 CXX_BIN="${CXX%% *}"
-if [ ! -x "${CXX_BIN}" ]; then
-    NVCC_DIR="${NVCC_DIR:-/usr/local/cuda/bin}"
-    echo "WARNING: configured compiler ${CXX_BIN} not found; using ${NVCC_DIR}/nvcc" >&2
-    CXX="${NVCC_DIR}/nvcc ${CXX#* }"
+CXX_ARGS=""
+if [ "${CXX}" != "${CXX_BIN}" ]; then
+    CXX_ARGS="${CXX#* }"
 fi
-# nvcc 12.x accepts host gcc <= 14, but the system g++ is now 15 (OS upgrade). The
+# ORIGINAL (broke on tuolumne: grid-config gives a bare 'hipcc', which [ -x ] does not
+# resolve through PATH): if [ ! -x "${CXX_BIN}" ]; then
+# Only for nvcc builds (local CUDA machine); any other compiler (hipcc, ...) is untouched.
+if [ "$(basename "${CXX_BIN}")" = "nvcc" ] && ! command -v "${CXX_BIN}" >/dev/null 2>&1; then
+    NVCC_DIR="${NVCC_DIR:-/usr/local/cuda/bin}"
+    if [ -x "${NVCC_DIR}/nvcc" ]; then
+        echo "WARNING: configured compiler ${CXX_BIN} not found; using ${NVCC_DIR}/nvcc" >&2
+        CXX="${NVCC_DIR}/nvcc ${CXX_ARGS}"
+    fi
+fi
+# nvcc 12.x accepts host gcc <= 14, but the local system g++ is now 15 (OS upgrade). The
 # -ccbin is Open MPI's mpic++, which calls ${OMPI_CXX:-g++}; point it at g++-12 unless
-# the caller set OMPI_CXX.
-GXX_MAJOR="$(g++ -dumpversion | cut -d. -f1)"
-if [ -z "${OMPI_CXX:-}" ] && [ "${GXX_MAJOR}" -gt 14 ] && command -v g++-12 >/dev/null 2>&1; then
-    echo "WARNING: system g++ is version ${GXX_MAJOR} (> 14, unsupported by nvcc 12); using OMPI_CXX=g++-12" >&2
-    export OMPI_CXX=g++-12
+# the caller set OMPI_CXX. nvcc builds only.
+if [ "$(basename "${CXX%% *}")" = "nvcc" ] && [ -z "${OMPI_CXX:-}" ] && command -v g++ >/dev/null 2>&1; then
+    GXX_MAJOR="$(g++ -dumpversion | cut -d. -f1)"
+    if [ "${GXX_MAJOR}" -gt 14 ] && command -v g++-12 >/dev/null 2>&1; then
+        echo "WARNING: system g++ is version ${GXX_MAJOR} (> 14, unsupported by nvcc 12); using OMPI_CXX=g++-12" >&2
+        export OMPI_CXX=g++-12
+    fi
 fi
 CXXFLAGS="$(${CONFIG} --cxxflags)"
 LDFLAGS="$(${CONFIG} --ldflags)"
