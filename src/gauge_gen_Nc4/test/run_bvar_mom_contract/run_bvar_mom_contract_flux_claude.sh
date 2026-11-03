@@ -55,7 +55,12 @@ case "${ENS}" in
     *m0p1*|*10p865*)  betastr=10p865; massstr=0p1000 ;;
     *m0p05*|*10p840*) betastr=10p840; massstr=0p0500 ;;
     *m0p01*|*10p800*) betastr=10p800; massstr=0p0100 ;;
-    *) echo "ERROR: ENS='${ENS}' not one of m0p1000/m0p0500/m0p0100 (momentum pass = light masses only)" >&2; exit 1 ;;
+    # heavy masses (user 2026-11-03): smeared-source dumps only (bvar_2448_<ens>/, 93/88/113 configs)
+    *m0p2*|*10p990*)  betastr=10p990; massstr=0p2000 ;;
+    *m0p3*|*11p035*)  betastr=11p035; massstr=0p3000 ;;
+    *m0p4*|*11p045*)  betastr=11p045; massstr=0p4000 ;;
+    # ORIGINAL: *) echo "ERROR: ENS='${ENS}' not one of m0p1000/m0p0500/m0p0100 (momentum pass = light masses only)" >&2; exit 1 ;;
+    *) echo "ERROR: ENS='${ENS}' not one of m0p0100/m0p0500/m0p1000/m0p2000/m0p3000/m0p4000" >&2; exit 1 ;;
 esac
 cfgfilename=conf_nc4nf1_2448_b${betastr}_m${massstr}
 LUSTRE=/p/lustre5/matsumoto5
