@@ -26,8 +26,8 @@ CONT=/p/lustre5/matsumoto5/conf_nc4nf1_2448_cont
 script=submit_glueball_tuo_claude.sh
 
 # stream table: tag  topdir  start  step  [end]   (end empty = last existing config)
-# heavy: traj >= 1000 every 20 (as the meson analysis); m0.05 every 20, m0.01 every 4 (user 2026-11-06).
-# START POINTS / _cont STREAMS OF m0.05 AND m0.01: PROPOSED, to be confirmed by the user.
+# Same config sets as the meson analysis (user 2026-11-06): heavy traj >= 1000 every 20; m0.05 from 500 every 20
+# (+ _cont from 2140); m0.01 from 100 every 4 (+ _cont from 760) -- the meson v2 disc (LMA) starts, CONF_MIN 500 / 100.
 streams=(
   "b11p045_m0p4000 ${ORIG} 1000 20"
   "b11p035_m0p3000 ${ORIG} 1000 20"
@@ -36,7 +36,8 @@ streams=(
   "b10p865_m0p1000 ${CONT} 4660 20"
   "b10p840_m0p0500 ${ORIG} 500 20"
   "b10p840_m0p0500 ${CONT} 2140 20"
-  "b10p800_m0p0100 ${ORIG} 4 4"
+  # "b10p800_m0p0100 ${ORIG} 4 4"
+  "b10p800_m0p0100 ${ORIG} 100 4"
   "b10p800_m0p0100 ${CONT} 760 4"
 )
 
