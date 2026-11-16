@@ -34,8 +34,11 @@ streams=(
   "b10p990_m0p2000 ${ORIG} 1000 20"
   "b10p865_m0p1000 ${ORIG} 1000 20"
   "b10p865_m0p1000 ${CONT} 4660 20"
-  "b10p840_m0p0500 ${ORIG} 500 20"
-  "b10p840_m0p0500 ${CONT} 2140 20"
+  # "b10p840_m0p0500 ${ORIG} 500 20"
+  # "b10p840_m0p0500 ${CONT} 2140 20"
+  # m0.05 every 4 (every checkpoint; user 2026-11-16: "it should be cheap"), jackknife bin 50 configs (= 200 traj as before)
+  "b10p840_m0p0500 ${ORIG} 500 4"
+  "b10p840_m0p0500 ${CONT} 2140 4"
   # "b10p800_m0p0100 ${ORIG} 4 4"
   "b10p800_m0p0100 ${ORIG} 100 4"
   "b10p800_m0p0100 ${CONT} 760 4"
