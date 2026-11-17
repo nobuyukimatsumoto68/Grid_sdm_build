@@ -28,6 +28,7 @@
  *   glueball_h5_claude --dir <latdir> --prefix <name> --start S --end E --step K --outdir <dir>
  *                      [--part p --nparts n] [--depth 4] [--alpha 0.33] [--nlev 4] --grid X.Y.Z.T --mpi ...
  *   glueball_h5_claude --selftest --grid 8.8.8.8      (projection vs an Eigen SVD polar factor on random matrices)
+ * Env GLUE_TRACE=1: flushed per-path trace lines at levels >= 2 (hang investigation, plan Chunk 8.6).
  */
 #include <Grid/Grid.h>
 #include <cfloat>
@@ -310,6 +311,7 @@ private:
   int nlev;
   int L;
   int glbT;
+  bool traceOn;
   LatticeMomPhase phase;
 
   void buildPhases();
@@ -326,6 +328,8 @@ GlueballMeasure::GlueballMeasure(GridCartesian* g, int d, RealD a, int nl)
   GRID_ASSERT(fd[0] == fd[1] && fd[0] == fd[2]);
   L = fd[0];
   glbT = fd[3];
+  const char* gt = std::getenv("GLUE_TRACE");
+  traceOn = (gt != nullptr && std::string(gt) == "1");
   buildPhases();
 }
 
@@ -497,11 +501,37 @@ void GlueballMeasure::levelOps(const std::vector<LatticeColourMatrixD>& U, int l
   std::vector<std::complex<double>> cm((size_t)nm * np * glbT);
   LatticeComplexD tr(grid);
   double t0 = usecond();
+  // ORIGINAL loop (kept for reference; replaced 2026-11-17 by the timed / traced loop below, same calls):
+  // for (int ip = 0; ip < np; ip++) {
+  //   pathTrace(U, ip, s, tr);
+  //   momSums(tr, cp, cm, ip);
+  // }
+  // Hang investigation (Grid plan Chunk 8.6): 4 silent GPU hangs, all inside this loop at levels 2-3. Time the two
+  // phases separately; with GLUE_TRACE=1 print a flushed line before and after each call at levels >= 2, so the
+  // last line of a hung process names the call that never returned.
+  double tpath = 0.0;
+  double tsum = 0.0;
+  const bool tr_on = traceOn && lev >= 2;
   for (int ip = 0; ip < np; ip++) {
+    if (tr_on) {
+      std::cout << GridLogMessage << "# trace lev " << lev << " path " << ip << " pathTrace start" << std::endl;
+    }
+    double ta = usecond();
     pathTrace(U, ip, s, tr);
+    double tb = usecond();
+    if (tr_on) {
+      std::cout << GridLogMessage << "# trace lev " << lev << " path " << ip << " momSums start" << std::endl;
+    }
     momSums(tr, cp, cm, ip);
+    double tc = usecond();
+    if (tr_on) {
+      std::cout << GridLogMessage << "# trace lev " << lev << " path " << ip << " done" << std::endl;
+    }
+    tpath += tb - ta;
+    tsum += tc - tb;
   }
   double t1 = usecond();
+  std::cout << GridLogMessage << "#   level " << lev << ": path traces " << tpath * 1e-6 << " s, momentum sums " << tsum * 1e-6 << " s" << std::endl;
   for (int a = 0; a < no; a++) {
     const int m = GlueballTable::op_mom[a];
     for (int t = 0; t < glbT; t++) {
