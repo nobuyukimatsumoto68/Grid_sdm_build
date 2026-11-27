@@ -29,6 +29,8 @@
  *                      [--part p --nparts n] [--depth 4] [--alpha 0.33] [--nlev 4] --grid X.Y.Z.T --mpi ...
  *   glueball_h5_claude --selftest --grid 8.8.8.8      (projection vs an Eigen SVD polar factor on random matrices)
  * Env GLUE_TRACE=1: flushed per-path trace lines at levels >= 2 (hang investigation, plan Chunk 8.6).
+ *   glueball_h5_claude --stress <prod|full|kernel|slice|split> --dir <latdir> --prefix <name> --conf C --ncalls N
+ *                      [--level 2] [--maxtime seconds] --grid ... --mpi 1.1.1.1      (hang reproduction, plan Chunk 8.7; no output file)
  */
 #include <Grid/Grid.h>
 #include <cfloat>
@@ -303,6 +305,13 @@ public:
 
   // public: CUDA extended __host__ __device__ lambdas (accelerator_for) may not sit in private member functions
   void momSums(const LatticeComplexD& tr, std::vector<std::complex<double>>& cp, std::vector<std::complex<double>>& cm, int ip);
+
+  // Hang reproduction (plan Chunk 8.7): the two halves of momSums (same code), the split variant (28 single-component
+  // sliceSums), and the stress driver repeating them on one config. Production measure() does not use them.
+  void momKernel(const LatticeComplexD& tr, LatticeMomSum& P);
+  void momSlice(const LatticeMomSum& P, std::vector<std::complex<double>>& cp, std::vector<std::complex<double>>& cm, int ip);
+  void momSumsSplit(const LatticeComplexD& tr, std::vector<std::complex<double>>& cp, std::vector<std::complex<double>>& cm, int ip);
+  void stressRun(const LatticeGaugeFieldD& Umu, const std::string& mode, int level, long ncalls, double maxtime);
 
 private:
   GridCartesian* grid;
@@ -582,6 +591,207 @@ long GlueballMeasure::measure(const LatticeGaugeFieldD& Umu, std::vector<RealD>&
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Hang reproduction (plan Chunk 8.7). momKernel + momSlice = momSums split into its two halves (identical code);
+// momSumsSplit = candidate fix with 28 single-component sliceSums (same sums up to the summation order).
+// ---------------------------------------------------------------------------------------------------------------
+void GlueballMeasure::momKernel(const LatticeComplexD& tr, LatticeMomSum& P)
+{
+  const int nm = GlueballTable::nmoms;
+  const auto osites = grid->oSites();
+  autoView(tr_v, tr, AcceleratorRead);
+  autoView(ph_v, phase, AcceleratorRead);
+  autoView(P_v, P, AcceleratorWrite);
+  accelerator_for(ss, osites, vComplexD::Nsimd(), {
+    auto z = TensorRemove(coalescedRead(tr_v[ss]));
+    auto ph = coalescedRead(ph_v[ss]);
+    auto zp = z + conjugate(z);
+    auto zm = z - conjugate(z);
+    decltype(coalescedRead(P_v[ss])) o;
+    for (int m = 0; m < nm; m++) {
+      o._internal[m] = ph._internal[m] * zp;
+      o._internal[nm + m] = ph._internal[m] * zm;
+    }
+    coalescedWrite(P_v[ss], o);
+  });
+}
+
+void GlueballMeasure::momSlice(const LatticeMomSum& P, std::vector<std::complex<double>>& cp, std::vector<std::complex<double>>& cm, int ip)
+{
+  const int nm = GlueballTable::nmoms;
+  const int np = GlueballTable::npaths;
+  std::vector<typename LatticeMomSum::scalar_object> sl;
+  sliceSum(P, sl, 3);
+  for (int t = 0; t < glbT; t++) {
+    for (int m = 0; m < nm; m++) {
+      ComplexD a = sl[t]._internal[m];
+      ComplexD c = sl[t]._internal[nm + m];
+      cp[((size_t)m * np + ip) * glbT + t] = std::complex<double>(0.5 * a.real(), 0.5 * a.imag());
+      cm[((size_t)m * np + ip) * glbT + t] = std::complex<double>(0.5 * c.real(), 0.5 * c.imag());
+    }
+  }
+}
+
+void GlueballMeasure::momSumsSplit(const LatticeComplexD& tr, std::vector<std::complex<double>>& cp, std::vector<std::complex<double>>& cm, int ip)
+{
+  const int nm = GlueballTable::nmoms;
+  const int np = GlueballTable::npaths;
+  const auto osites = grid->oSites();
+  LatticeComplexD Q(grid);
+  for (int c = 0; c < 2 * nm; c++) {
+    const int m = c % nm;
+    const RealD sg = (c < nm) ? 1.0 : -1.0;
+    {
+      autoView(tr_v, tr, AcceleratorRead);
+      autoView(ph_v, phase, AcceleratorRead);
+      autoView(Q_v, Q, AcceleratorWrite);
+      accelerator_for(ss, osites, vComplexD::Nsimd(), {
+        auto z = TensorRemove(coalescedRead(tr_v[ss]));
+        auto ph = coalescedRead(ph_v[ss]);
+        auto w = z + sg * conjugate(z);
+        decltype(coalescedRead(Q_v[ss])) o;
+        o()()() = ph._internal[m] * w;
+        coalescedWrite(Q_v[ss], o);
+      });
+    }
+    std::vector<ComplexS> sl;
+    sliceSum(Q, sl, 3);
+    for (int t = 0; t < glbT; t++) {
+      ComplexD a = TensorRemove(sl[t]);
+      std::complex<double> v(0.5 * a.real(), 0.5 * a.imag());
+      if (c < nm) {
+        cp[((size_t)m * np + ip) * glbT + t] = v;
+      } else {
+        cm[((size_t)m * np + ip) * glbT + t] = v;
+      }
+    }
+  }
+}
+
+// Repeat the suspect calls on one config at blocking level `level`, cycling over the paths where the mode uses them.
+// modes: prod (pathTrace + momSums, the production calls), full (pathTrace + momKernel + momSlice), kernel (momKernel on
+// path 0 only), slice (momSlice of path 0 only), split (pathTrace + momSumsSplit). Before each sub-call a flushed marker
+// "# st <call> <P|M|K|S|X>" and after the call "# st <call> D", so a hung process names the sub-call. Every call is
+// compared with the reference from the production calls (kernel mode: every 1000 calls).
+// maxtime > 0: stop cleanly after maxtime seconds of stress calls (so the job summary is written before the wall).
+void GlueballMeasure::stressRun(const LatticeGaugeFieldD& Umu, const std::string& mode, int level, long ncalls, double maxtime)
+{
+  const int nm = GlueballTable::nmoms;
+  const int np = GlueballTable::npaths;
+  GRID_ASSERT(mode == "prod" || mode == "full" || mode == "kernel" || mode == "slice" || mode == "split");
+  std::vector<LatticeColourMatrixD> U(3, grid);
+  for (int k = 0; k < 3; k++) {
+    U[k] = PeekIndex<LorentzIndex>(Umu, k);
+  }
+  int s = 1;
+  long nbad = 0;
+  for (int lev = 0; lev < level; lev++) {
+    for (int it = 0; it < depth; it++) {
+      nbad += apeStep(U, s);
+    }
+    blockLinks(U, s);
+    s = 2 * s;
+  }
+  GRID_ASSERT(nbad == 0);
+
+  const size_t nsz = (size_t)nm * np * glbT;
+  std::vector<std::complex<double>> rcp(nsz);
+  std::vector<std::complex<double>> rcm(nsz);
+  std::vector<std::complex<double>> cp(nsz);
+  std::vector<std::complex<double>> cm(nsz);
+  LatticeComplexD tr(grid);
+  LatticeMomSum P(grid);
+  for (int ip = 0; ip < np; ip++) {
+    pathTrace(U, ip, s, tr);
+    momSums(tr, rcp, rcm, ip);
+  }
+  pathTrace(U, 0, s, tr);
+  momKernel(tr, P);
+  std::cout << GridLogMessage << "# stress mode " << mode << " level " << level << " (step " << s << ") ncalls " << ncalls
+            << ": reference computed" << std::endl;
+
+  double tmax = 0.0;
+  long imax = -1;
+  double dmax = 0.0;
+  long nbig = 0;
+  const double tstart = usecond();
+  long ndone = 0;
+  for (long i = 0; i < ncalls; i++) {
+    const bool cyc = (mode == "prod" || mode == "full" || mode == "split");
+    const int ip = cyc ? (int)(i % np) : 0;
+    const double ta = usecond();
+    if (mode == "prod") {
+      std::cout << GridLogMessage << "# st " << i << " P" << std::endl;
+      pathTrace(U, ip, s, tr);
+      std::cout << GridLogMessage << "# st " << i << " M" << std::endl;
+      momSums(tr, cp, cm, ip);
+    } else if (mode == "full") {
+      std::cout << GridLogMessage << "# st " << i << " P" << std::endl;
+      pathTrace(U, ip, s, tr);
+      std::cout << GridLogMessage << "# st " << i << " K" << std::endl;
+      momKernel(tr, P);
+      std::cout << GridLogMessage << "# st " << i << " S" << std::endl;
+      momSlice(P, cp, cm, ip);
+    } else if (mode == "split") {
+      std::cout << GridLogMessage << "# st " << i << " P" << std::endl;
+      pathTrace(U, ip, s, tr);
+      std::cout << GridLogMessage << "# st " << i << " X" << std::endl;
+      momSumsSplit(tr, cp, cm, ip);
+    } else if (mode == "kernel") {
+      std::cout << GridLogMessage << "# st " << i << " K" << std::endl;
+      momKernel(tr, P);
+    } else {
+      std::cout << GridLogMessage << "# st " << i << " S" << std::endl;
+      momSlice(P, cp, cm, 0);
+    }
+    const double tb = usecond();
+    std::cout << GridLogMessage << "# st " << i << " D" << std::endl;
+    if (tb - ta > tmax) {
+      tmax = tb - ta;
+      imax = i;
+    }
+    bool check = true;
+    if (mode == "kernel") {
+      check = ((i + 1) % 1000 == 0);
+      if (check) {
+        momSlice(P, cp, cm, 0);
+      }
+    }
+    if (check) {
+      double d = 0.0;
+      double r = 0.0;
+      for (int m = 0; m < nm; m++) {
+        for (int t = 0; t < glbT; t++) {
+          const size_t k = ((size_t)m * np + ip) * glbT + t;
+          d = std::max(d, std::abs(cp[k] - rcp[k]));
+          d = std::max(d, std::abs(cm[k] - rcm[k]));
+          r = std::max(r, std::abs(rcp[k]));
+          r = std::max(r, std::abs(rcm[k]));
+        }
+      }
+      const double rel = (r > 0.0) ? d / r : d;
+      dmax = std::max(dmax, rel);
+      if (rel > 1e-12) {
+        nbig++;
+        std::cout << GridLogMessage << "# stress WARNING call " << i << " path " << ip << " rel diff " << rel << std::endl;
+      }
+    }
+    ndone = i + 1;
+    const bool tout = (maxtime > 0.0 && (usecond() - tstart) * 1e-6 > maxtime);
+    if ((i + 1) % 1000 == 0 || i + 1 == ncalls || tout) {
+      const double el = (usecond() - tstart) * 1e-6;
+      std::cout << GridLogMessage << "# stress heartbeat " << i + 1 << " calls, " << (i + 1) / el << " calls/s, max call "
+                << tmax * 1e-6 << " s (call " << imax << "), max rel diff " << dmax << ", calls > 1e-12: " << nbig << std::endl;
+    }
+    if (tout) {
+      std::cout << GridLogMessage << "# stress maxtime " << maxtime << " s reached after " << ndone << " calls" << std::endl;
+      break;
+    }
+  }
+  std::cout << GridLogMessage << "# stress done: mode " << mode << " " << ndone << " calls, max call " << tmax * 1e-6
+            << " s, max rel diff " << dmax << ", calls > 1e-12: " << nbig << std::endl;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // projection self-test on random matrices: unitarity, det = 1, P^\dagger W Hermitian (polar factor of W)
 // ---------------------------------------------------------------------------------------------------------------
 static void projection_check(const LatticeColourMatrixD& V, const std::string& label)
@@ -664,6 +874,29 @@ int main(int argc, char** argv)
 
   const std::string dir = arg_or(argc, argv, "--dir", "");
   const std::string prefix = arg_or(argc, argv, "--prefix", "");
+
+  // hang reproduction (plan Chunk 8.7): --stress <mode> --conf C --ncalls N --level L on one config, no output file
+  if (GridCmdOptionExists(argv, argv + argc, "--stress")) {
+    const std::string smode = arg_or(argc, argv, "--stress", "full");
+    const int sconf = std::atoi(arg_or(argc, argv, "--conf", "-1").c_str());
+    const long sn = std::atol(arg_or(argc, argv, "--ncalls", "1000").c_str());
+    const double smax = std::atof(arg_or(argc, argv, "--maxtime", "0").c_str());
+    const int slev = std::atoi(arg_or(argc, argv, "--level", "2").c_str());
+    const int sdepth = std::atoi(arg_or(argc, argv, "--depth", "4").c_str());
+    const RealD salpha = std::atof(arg_or(argc, argv, "--alpha", "0.33").c_str());
+    GRID_ASSERT(!dir.empty() && !prefix.empty() && sconf >= 0 && sn > 0 && slev >= 0);
+    const std::string scfg = dir + "/" + prefix + "." + std::to_string(sconf);
+    LatticeGaugeFieldD Us(UGrid);
+    FieldMetaData sheader;
+    NerscIO::readConfiguration(Us, sheader, scfg);
+    std::cout << GridLogMessage << "# stress: config " << scfg << " plaq " << std::setprecision(12)
+              << WilsonLoops<PeriodicGimplR>::avgPlaquette(Us) << std::endl;
+    GlueballMeasure gs(UGrid, sdepth, salpha, slev + 1);
+    gs.stressRun(Us, smode, slev, sn, smax);
+    Grid_finalize();
+    return 0;
+  }
+
   const std::string outdir = arg_or(argc, argv, "--outdir", "");
   const int start = std::atoi(arg_or(argc, argv, "--start", "0").c_str());
   const int end = std::atoi(arg_or(argc, argv, "--end", "-1").c_str());

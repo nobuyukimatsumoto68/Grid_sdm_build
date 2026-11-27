@@ -2,6 +2,9 @@
 # A. S. Meyer (LLNL) single-flavour (i2c2) local 4q operators, from /mnt/baracuda_14/grid_claude/baryon_group_theory/aaron_4q_ops/output_quad00_op/i2c2
 # O_i(p) = sum_A c^i_A B_A(p), A = sorted PD tuple (0 = upper up, 1 = upper down, 2 = lower up, 3 = lower down)
 # group = (frame, irrep, component): one irrep row at one momentum direction; ops = unique IDs
+# NOTE: irrep codes are Meyer's file labels, kept as is. His a2x / b1x are SWAPPED relative to the standard
+#   (Mulliken / Goeckeler 2012) names in C4v (frames 100, 200) and C2v (110): a2x = B1, b1x = A2 (for d along z
+#   his a2x holds helicity +-2 only, chi(C4) = -1). Plots show the corrected names (bvar_dispersion_claude.irtxt).
 #
 # mom <k> <px> <py> <pz>
 # group <frame> <irrep> <comp> <k> <nops>
