@@ -26,7 +26,17 @@ set -u
 
 date
 hostname
-HERE=$(cd "$(dirname "$0")" && pwd)
+# ORIGINAL: HERE=$(cd "$(dirname "$0")" && pwd)
+# flux batch runs a SPOOLED COPY of this script ($0 in a temporary directory), so $0 does not locate the drivers
+# (validation f3nDujNjgJFR, 2026-11-26: nothing ran). Use the submit directory (flux keeps the cwd) or BVAR32C_DIR.
+HERE=${BVAR32C_DIR:-$(pwd)}
+for f in run_bvar_dumper_32c_flux_claude.sh run_bvar_mom_contract_32c_flux_claude.sh; do
+    if [ ! -f "${HERE}/${f}" ]; then
+        echo "ERROR: ${HERE}/${f} not found -- submit from the run_bvar_32c directory or set BVAR32C_DIR" >&2
+        exit 1
+    fi
+done
+echo "driver dir = ${HERE}"
 LUSTRE=/p/lustre5/matsumoto5
 ENS_LIST=${ENS_LIST:-"m0p0100 m0p0500 m0p1000 m0p2000 m0p3000 m0p4000"}
 
